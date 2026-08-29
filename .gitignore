@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 생성되는 데이터(단골 DB 등) — 실행하면 자동 생성됩니다
+data/*.db
+
+# 환경/비밀
+.env
+*.key
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
