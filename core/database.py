@@ -1,15 +1,9 @@
 """
-core/database.py — SQLite3 익명 단골 데이터베이스
+core/database.py — SQLite3 주문 통계 데이터베이스
 ================================================
-계획서 2.2 / 3장 데이터베이스 항목 구현.
-
-개인정보 보호 핵심 원칙(계획서 2.2):
-  · 얼굴 "사진(원본 이미지)" 은 절대 저장하지 않습니다.
-  · 눈·코·입의 기하학적 랜드마크에서 뽑아낸 "숫자 배열(임베딩 벡터)" 만 저장합니다.
-  · 그 숫자마저도 사람이 알아볼 수 없으므로 익명(anonymous)입니다.
+계획서 3장 데이터베이스 항목 구현.
 
 테이블 구조
-  regulars : 단골 정보(별명, 얼굴 임베딩 벡터, 즐겨찾는 주문)
   orders   : 판매 통계(요일·시간대별 트렌드 분석용 — 계획서 6장 확장성)
 """
 from __future__ import annotations
@@ -18,15 +12,12 @@ import json
 import sqlite3
 import threading
 from datetime import datetime
-from typing import Optional
-
-import numpy as np
 
 from config import DB_PATH
 
 
 class KioskDatabase:
-    """단골 정보와 주문 통계를 관리하는 데이터베이스 클래스(OOP 설계)."""
+    """주문 통계를 관리하는 데이터베이스 클래스(OOP 설계)."""
 
     def __init__(self, db_path=DB_PATH):
         self.db_path = str(db_path)
@@ -42,19 +33,8 @@ class KioskDatabase:
     def _create_tables(self) -> None:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS regulars (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nickname    TEXT NOT NULL,
-                    embedding   TEXT NOT NULL,   -- 얼굴 임베딩 벡터(JSON 숫자배열)
-                    favorite    TEXT,            -- 즐겨찾는 주문(JSON)
-                    visit_count INTEGER DEFAULT 1,
-                    created_at  TEXT,
-                    updated_at  TEXT
-                )
-                """
-            )
+            # 이전 버전에서 만들어진 단골 테이블(얼굴 임베딩 등)이 남아 있으면 제거합니다.
+            cur.execute("DROP TABLE IF EXISTS regulars")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -68,71 +48,6 @@ class KioskDatabase:
                 """
             )
             self._conn.commit()
-
-    # ──────────────────────────────────────────
-    # 단골 등록 / 조회
-    # ──────────────────────────────────────────
-    def add_regular(self, nickname: str, embedding: np.ndarray,
-                    favorite: Optional[dict] = None) -> int:
-        """새 단골을 등록합니다. 얼굴 임베딩은 JSON 숫자배열로 저장(사진 X)."""
-        now = datetime.now().isoformat()
-        emb_json = json.dumps([round(float(x), 6) for x in embedding])
-        fav_json = json.dumps(favorite, ensure_ascii=False) if favorite else None
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(
-                """INSERT INTO regulars
-                   (nickname, embedding, favorite, visit_count, created_at, updated_at)
-                   VALUES (?, ?, ?, 1, ?, ?)""",
-                (nickname, emb_json, fav_json, now, now),
-            )
-            self._conn.commit()
-            return int(cur.lastrowid)
-
-    def get_all_regulars(self) -> list[dict]:
-        """모든 단골을 (임베딩 벡터 포함) 불러옵니다."""
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("SELECT * FROM regulars")
-            rows = cur.fetchall()
-        result = []
-        for r in rows:
-            result.append({
-                "id": r["id"],
-                "nickname": r["nickname"],
-                "embedding": np.array(json.loads(r["embedding"]), dtype=np.float64),
-                "favorite": json.loads(r["favorite"]) if r["favorite"] else None,
-                "visit_count": r["visit_count"],
-            })
-        return result
-
-    def update_visit(self, regular_id: int, favorite: Optional[dict] = None) -> None:
-        """단골 재방문 시 방문 횟수를 1 늘리고, 필요하면 즐겨찾기를 갱신합니다."""
-        now = datetime.now().isoformat()
-        with self._lock:
-            cur = self._conn.cursor()
-            if favorite is not None:
-                cur.execute(
-                    """UPDATE regulars
-                       SET visit_count = visit_count + 1, favorite = ?, updated_at = ?
-                       WHERE id = ?""",
-                    (json.dumps(favorite, ensure_ascii=False), now, regular_id),
-                )
-            else:
-                cur.execute(
-                    """UPDATE regulars
-                       SET visit_count = visit_count + 1, updated_at = ?
-                       WHERE id = ?""",
-                    (now, regular_id),
-                )
-            self._conn.commit()
-
-    def nickname_exists(self, nickname: str) -> bool:
-        """같은 별명이 이미 있는지 확인합니다."""
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("SELECT 1 FROM regulars WHERE nickname = ? LIMIT 1", (nickname,))
-            return cur.fetchone() is not None
 
     # ──────────────────────────────────────────
     # 주문 통계(계획서 6장: 빅데이터 마케팅 대시보드)

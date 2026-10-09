@@ -41,11 +41,6 @@ TEXTS = {
         "child_mode": "어린이 모드",
         "standard_mode": "일반 모드",
         "contrast_mode": "고대비 모드",
-        "regular_welcome": "님, 환영합니다!",
-        "regular_ask": "늘 드시던 걸로 주문할까요?",
-        "yes_same": "네, 같은 걸로",
-        "no_new": "아니요, 새로 주문",
-        "register_regular": "단골 등록하기",
         "thank_you": "주문해 주셔서 감사합니다!",
         "order_number": "주문번호",
         "best_menu": "인기 메뉴",
@@ -60,7 +55,6 @@ TEXTS = {
         "added_toast": "담았어요",
         # ── 시연 도구막대 ──
         "demo_tools": "시연 도구:",
-        "demo_regular_sim": "단골 시뮬레이션",
         "demo_grab": "담기",
         # ── 상태바 / 비전 ──
         "vision_preparing": "📷 비전 AI 준비 중…",
@@ -77,7 +71,9 @@ TEXTS = {
         "gesture_off": "꺼짐",
         "gesture_on_toast": "✋ 손동작 제어 켜짐",
         "gesture_off_toast": "🚫 손동작 꺼짐 (화면 터치로 주문하세요)",
-        "point_then_fist": "👉 메뉴를 가리킨 채 주먹을 쥐세요",
+        "point_then_fist": "👉 메뉴 위에 커서를 올린 뒤 집거나(핀치) 잠시 멈춰 주세요",
+        # ── 고대비(저시력자) ──
+        "contrast_tooltip": "눈이 불편한 분을 위한 고대비 화면 켜기/끄기",
         # ── 모드 음성 안내(TTS) ──
         "mode_silver_say": "큰 글씨 실버 모드로 바꿨어요",
         "mode_child_say": "어린이 모드로 바꿨어요",
@@ -87,18 +83,13 @@ TEXTS = {
         "said_added": "담았어요",
         "said_set_added": "세트 담았어요",
         # ── 음성 주문 결과 ──
-        "engine_llm": "AI(LLM)",
         "engine_smart": "스마트 분석",
         "voice_added": "{n}개 담았어요",
         "not_understood": "메뉴를 못 알아들었어요",
-        # ── 단골 ──
-        "regular_register_ask": ("단골로 등록하고 다음엔 더 빠르게 주문할까요?\n"
-                                 "(얼굴 사진이 아니라 숫자 정보만 안전하게 저장돼요)"),
-        "regular_nick_base": "단골",
-        "choose_nickname": "별명을 정해주세요:",
-        "registered_done": "{name} 단골 등록 완료!",
-        "usual_ready": "늘 드시던 걸로 담았어요!",
-        "sample_regular": "치즈버거매니아",
+        "set_word": "세트",
+        "voice_item_tts": "{name} {qty}개",
+        "voice_result_tts": "{items} 담았어요. 지금 합계는 {total}원입니다.",
+        "cleared_tts": "장바구니를 모두 비웠어요.",
         # ── 음성 주문 창(voice_dialog) ──
         "voice_title": "음성 주문",
         "voice_natural": "자연어로 주문하세요",
@@ -120,14 +111,15 @@ TEXTS = {
         "internet_required": "인터넷이 필요해요. 직접 입력하거나 예시를 눌러주세요.",
         "mic_lib_missing": "음성 라이브러리 없음",
         "error_label": "오류",
-        "voice_gesture_hint": "✊ 주먹·엄지척으로 주문 확인  ·  👈👉 스와이프로 예시 전환",
-        # ── 시작 접근성 안내(시각장애인) ──
+        "voice_gesture_hint": ("✊ 주먹·엄지척으로 주문 확인  ·  👈👉 스와이프로 예시 전환\n"
+                               "👆 버튼 위에 손을 잠시 멈추면 자동으로 눌려요"),
+        # ── 시작 접근성 안내(시각장애인·저시력자) ──
         "a11y_ask_title": "음성 도움 안내",
-        "a11y_ask": ("시각장애가 있으신가요?\n\n"
+        "a11y_ask": ("눈이 불편하시거나 화면 글씨가 잘 안 보이시나요?\n\n"
                      "'네'라고 말씀하시거나 아래 '네' 버튼을 누르시면\n"
-                     "음성으로 주문을 도와드립니다."),
-        "a11y_ask_tts": ("안녕하세요. 시각장애가 있으신가요? "
-                         "있으시면 네 라고 말씀하시거나 화면의 예 버튼을 눌러 주세요. "
+                     "화면을 선명하게(고대비) 바꾸고 음성으로 주문을 도와드립니다."),
+        "a11y_ask_tts": ("안녕하세요. 눈이 불편하시거나 화면이 잘 안 보이시나요? "
+                         "그렇다면 네 라고 말씀하시거나 화면의 네 버튼을 눌러 주세요. "
                          "음성으로 주문을 도와드리겠습니다."),
         "a11y_yes": "네, 음성으로 주문할게요",
         "a11y_no": "아니요, 화면으로 주문할게요",
@@ -159,11 +151,6 @@ TEXTS = {
         "child_mode": "Kids Mode",
         "standard_mode": "Standard",
         "contrast_mode": "High Contrast",
-        "regular_welcome": ", welcome back!",
-        "regular_ask": "Order your usual?",
-        "yes_same": "Yes, the usual",
-        "no_new": "No, new order",
-        "register_regular": "Register as regular",
         "thank_you": "Thank you for your order!",
         "order_number": "Order No.",
         "best_menu": "Best Menu",
@@ -178,7 +165,6 @@ TEXTS = {
         "added_toast": "Added",
         # ── 시연 도구막대 ──
         "demo_tools": "Demo tools:",
-        "demo_regular_sim": "Regular demo",
         "demo_grab": "Grab",
         # ── 상태바 / 비전 ──
         "vision_preparing": "📷 Vision AI starting…",
@@ -195,7 +181,9 @@ TEXTS = {
         "gesture_off": "OFF",
         "gesture_on_toast": "✋ Gesture control ON",
         "gesture_off_toast": "🚫 Gesture OFF (use touch)",
-        "point_then_fist": "👉 Point at a menu, then make a fist",
+        "point_then_fist": "👉 Move the cursor onto a menu, then pinch or hold still",
+        # ── 고대비(저시력자) ──
+        "contrast_tooltip": "Toggle high-contrast screen for low vision",
         # ── 모드 음성 안내(TTS) ──
         "mode_silver_say": "Switched to large-text silver mode",
         "mode_child_say": "Switched to kids mode",
@@ -205,18 +193,13 @@ TEXTS = {
         "said_added": "added",
         "said_set_added": "set added",
         # ── 음성 주문 결과 ──
-        "engine_llm": "AI(LLM)",
         "engine_smart": "Smart parser",
         "voice_added": "Added {n}",
         "not_understood": "Could not understand",
-        # ── 단골 ──
-        "regular_register_ask": ("Register as a regular for faster ordering next time?\n"
-                                 "(Only anonymous numbers are stored, never your photo)"),
-        "regular_nick_base": "VIP",
-        "choose_nickname": "Choose a nickname:",
-        "registered_done": "{name} registered!",
-        "usual_ready": "Your usual is ready!",
-        "sample_regular": "CheeseburgerFan",
+        "set_word": "set",
+        "voice_item_tts": "{qty} {name}",
+        "voice_result_tts": "Added {items}. Your total is {total} won.",
+        "cleared_tts": "Your cart is now empty.",
         # ── 음성 주문 창(voice_dialog) ──
         "voice_title": "Voice Order",
         "voice_natural": "Order in natural language",
@@ -238,13 +221,14 @@ TEXTS = {
         "internet_required": "Internet required. Type or pick an example.",
         "mic_lib_missing": "Speech library missing",
         "error_label": "Error",
-        "voice_gesture_hint": "✊ Fist/Thumbs-up to confirm  ·  👈👉 Swipe to change example",
-        # ── 시작 접근성 안내(시각장애인) ──
+        "voice_gesture_hint": ("✊ Fist/Thumbs-up to confirm  ·  👈👉 Swipe to change example\n"
+                               "👆 Hold your hand still over a button to click it"),
+        # ── 시작 접근성 안내(시각장애인·저시력자) ──
         "a11y_ask_title": "Voice Assistance",
-        "a11y_ask": ("Do you have a visual impairment?\n\n"
+        "a11y_ask": ("Is it hard for you to see the screen?\n\n"
                      "Say 'yes' or press the 'Yes' button below\n"
-                     "to order by voice."),
-        "a11y_ask_tts": ("Hello. Do you have a visual impairment? "
+                     "to switch to high contrast and order by voice."),
+        "a11y_ask_tts": ("Hello. Is it hard for you to see the screen? "
                          "If so, please say yes, or press the Yes button on the screen. "
                          "I will help you order by voice."),
         "a11y_yes": "Yes, order by voice",
@@ -277,11 +261,6 @@ TEXTS = {
         "child_mode": "儿童模式",
         "standard_mode": "标准模式",
         "contrast_mode": "高对比模式",
-        "regular_welcome": "，欢迎回来！",
-        "regular_ask": "要点您常点的吗？",
-        "yes_same": "好的，老样子",
-        "no_new": "不用，重新点",
-        "register_regular": "注册为常客",
         "thank_you": "感谢您的惠顾！",
         "order_number": "订单号",
         "best_menu": "人气菜单",
@@ -296,7 +275,6 @@ TEXTS = {
         "added_toast": "已加入",
         # ── 시연 도구막대 ──
         "demo_tools": "演示工具：",
-        "demo_regular_sim": "常客演示",
         "demo_grab": "抓取",
         # ── 상태바 / 비전 ──
         "vision_preparing": "📷 视觉 AI 启动中…",
@@ -313,7 +291,9 @@ TEXTS = {
         "gesture_off": "关闭",
         "gesture_on_toast": "✋ 手势控制已开启",
         "gesture_off_toast": "🚫 手势已关闭（请触摸屏幕点单）",
-        "point_then_fist": "👉 指向菜单后握拳",
+        "point_then_fist": "👉 将光标移到菜单上，然后捏合或停留片刻",
+        # ── 고대비(저시력자) ──
+        "contrast_tooltip": "为视力不佳的用户开启/关闭高对比画面",
         # ── 모드 음성 안내(TTS) ──
         "mode_silver_say": "已切换到大字银发模式",
         "mode_child_say": "已切换到儿童模式",
@@ -323,18 +303,14 @@ TEXTS = {
         "said_added": "已加入",
         "said_set_added": "套餐已加入",
         # ── 음성 주문 결과 ──
-        "engine_llm": "AI(LLM)",
         "engine_smart": "智能解析",
         "voice_added": "已加入{n}个",
         "not_understood": "没听清菜单",
-        # ── 단골 ──
-        "regular_register_ask": ("注册为常客，下次点单更快好吗？\n"
-                                 "（不会保存照片，仅安全保存数字信息）"),
-        "regular_nick_base": "常客",
-        "choose_nickname": "请取一个昵称：",
-        "registered_done": "{name} 注册成功！",
-        "usual_ready": "已为您准备老样子！",
-        "sample_regular": "芝士堡粉丝",
+        "set_word": "套餐",
+        "voice_item_tts": "{qty}个{name}",
+        "voice_result_tts": "已加入{items}。现在合计{total}韩元。",
+        "cleared_tts": "购物车已清空。",
+
         # ── 음성 주문 창(voice_dialog) ──
         "voice_title": "语音点单",
         "voice_natural": "用自然语言点单",
@@ -356,14 +332,15 @@ TEXTS = {
         "internet_required": "需要联网。请手动输入或点击示例。",
         "mic_lib_missing": "缺少语音库",
         "error_label": "错误",
-        "voice_gesture_hint": "✊ 握拳·竖拇指确认  ·  👈👉 左右滑动切换示例",
-        # ── 시작 접근성 안내(시각장애인) ──
+        "voice_gesture_hint": ("✊ 握拳·竖拇指确认  ·  👈👉 左右滑动切换示例\n"
+                               "👆 手停在按钮上片刻即可自动点击"),
+        # ── 시작 접근성 안내(시각장애인·저시력자) ──
         "a11y_ask_title": "语音辅助",
-        "a11y_ask": ("您有视力障碍吗？\n\n"
+        "a11y_ask": ("您看不清屏幕吗？\n\n"
                      "说“是”或按下方的“是”按钮，\n"
-                     "即可通过语音点单。"),
-        "a11y_ask_tts": ("您好。您有视力障碍吗？"
-                         "如果有，请说是，或按屏幕上的是按钮。"
+                     "即可切换为高对比画面并通过语音点单。"),
+        "a11y_ask_tts": ("您好。您看不清屏幕吗？"
+                         "如果是，请说是，或按屏幕上的是按钮。"
                          "我将用语音帮您点单。"),
         "a11y_yes": "是，用语音点单",
         "a11y_no": "不，用屏幕点单",

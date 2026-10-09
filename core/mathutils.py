@@ -5,12 +5,14 @@ core/mathutils.py — STEAM 수학·과학 원리 구현부
 대회 심사 때 "이 함수가 계획서의 그 공식입니다" 라고 보여줄 수 있는 핵심 파일입니다.
 
   · 유클리디안 거리 (Euclidean Distance)   →  euclidean_distance()
-  · 코사인 유사도     (Cosine Similarity)   →  cosine_similarity()
+  · 코사인 유사도     (Cosine Similarity)   →  cosine_similarity()  (손가락 관절 각도)
   · 이동 평균 필터    (Moving Average)      →  MovingAverageFilter
+  · One-Euro 필터     (적응형 저역통과)      →  OneEuroFilter       (제스처 커서 떨림 제거)
   · 히스토그램 평활화 (Histogram Equalize)  →  equalize_lighting()
 """
 from __future__ import annotations
 
+import math
 from collections import deque
 from typing import Sequence
 
@@ -24,7 +26,7 @@ def euclidean_distance(a: Sequence[float], b: Sequence[float]) -> float:
     """두 점(또는 벡터) 사이의 직선 거리를 계산합니다.
 
     계획서 공식:  d = √Σ(xᵢ − yᵢ)²
-    얼굴 랜드마크 좌표 사이 거리를 잴 때 사용합니다(예: 눈 크기 변화율).
+    손 관절 사이 거리(핀치·손가락 펴짐)와 얼굴 비율(눈 사이 거리)을 재는 공식입니다.
     """
     va = np.asarray(a, dtype=np.float64)
     vb = np.asarray(b, dtype=np.float64)
@@ -35,11 +37,11 @@ def euclidean_distance(a: Sequence[float], b: Sequence[float]) -> float:
 # 4.1 코사인 유사도:  similarity = (A·B) / (‖A‖‖B‖)
 # ──────────────────────────────────────────────
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    """두 벡터가 이루는 각도로 '얼마나 닮았는지'를 -1~1 사이 값으로 계산합니다.
+    """두 벡터가 이루는 각도로 '얼마나 같은 방향인지'를 -1~1 사이 값으로 계산합니다.
 
     계획서 공식:  Similarity = (A · B) / (‖A‖ · ‖B‖)
-    단골 DB 의 얼굴 임베딩과 현재 얼굴 임베딩이 같은 사람인지 판별할 때 사용합니다.
-    1 에 가까울수록 같은 사람입니다.
+    제스처 인식에서 손가락 관절 각도를 잴 때 사용합니다(core/vision.py _joint_angle).
+    두 마디 벡터의 코사인이 -1(180°)에 가까울수록 손가락이 곧게 펴진 것입니다.
     """
     va = np.asarray(a, dtype=np.float64)
     vb = np.asarray(b, dtype=np.float64)
@@ -85,6 +87,57 @@ class MovingAverageFilter:
     def reset(self) -> None:
         self._buf_x.clear()
         self._buf_y.clear()
+
+
+# ──────────────────────────────────────────────
+# One-Euro 필터 — 지연은 줄이고 떨림도 줄이는 적응형 저역통과 필터
+# ──────────────────────────────────────────────
+class OneEuroFilter:
+    """One-Euro 필터(1D). 손이 느릴 때는 강하게(떨림 제거), 빠를 때는 약하게(지연 최소)
+    필터링합니다. 고정 창 이동평균보다 커서 조작감이 좋습니다.
+
+    참고: Casiez et al., "1€ Filter" (CHI 2012).
+    """
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.007,
+                 d_cutoff: float = 1.0):
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self._x_prev: float | None = None
+        self._dx_prev = 0.0
+        self._t_prev: float | None = None
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+
+    def filter(self, x: float, t_ms: float) -> float:
+        """새 값 x(시각 t_ms, 밀리초)를 넣고 평활화된 값을 돌려줍니다."""
+        if self._t_prev is None:
+            self._x_prev = x
+            self._t_prev = t_ms
+            self._dx_prev = 0.0
+            return x
+        dt = (t_ms - self._t_prev) / 1000.0
+        if dt <= 0:
+            return self._x_prev if self._x_prev is not None else x
+        dx = (x - self._x_prev) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        dx_hat = a_d * dx + (1 - a_d) * self._dx_prev
+        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        a = self._alpha(cutoff, dt)
+        x_hat = a * x + (1 - a) * self._x_prev
+        self._x_prev = x_hat
+        self._dx_prev = dx_hat
+        self._t_prev = t_ms
+        return x_hat
+
+    def reset(self) -> None:
+        self._x_prev = None
+        self._dx_prev = 0.0
+        self._t_prev = None
 
 
 # ──────────────────────────────────────────────

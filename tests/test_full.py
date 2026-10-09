@@ -4,15 +4,14 @@ tests/test_full.py — 전체 완전탐색 시뮬레이션 테스트
 모든 핵심 모듈을 경계값/예외 상황까지 폭넓게 검증합니다.
   · 수학 유틸 (거리/유사도/필터/조명보정)
   · 메뉴 데이터 무결성
-  · 장바구니 OOP (병합/수량/세트/사이즈/즐겨찾기 복원)
-  · 자연어 주문 NLU (수량 추출·세트·다국어·결제/비우기)
-  · 익명 단골 매칭 (코사인/연속프레임 확정)
-  · 데이터베이스 (등록/방문/통계)
+  · 장바구니 OOP (병합/수량/세트/사이즈)
+  · 자연어 주문 NLU (수량 추출·세트·다국어(한·영·중)·결제/비우기)
+  · 데이터베이스 (주문 통계)
   · 다국어 사전 (키 동등성)
   · 테마 (모든 모드)
-  · 제스처 인식기 (주먹/펼침/포인팅/수어/스와이프)
+  · 제스처 인식기 (주먹/펼침/포인팅/엄지척/스와이프)
   · 연령 추정 휴리스틱
-  · GUI 통합 (오프스크린): 모드전환·장바구니·제스처·음성주문·결제
+  · GUI 통합 (오프스크린): 모드전환·고대비 버튼·장바구니·제스처·음성주문(소리 안내)·결제
 
 실행:
     python tests/test_full.py
@@ -202,19 +201,6 @@ def test_cart_change_qty_and_remove():
     assert cart.is_empty()
 
 
-def test_cart_favorite_roundtrip():
-    cart = Cart()
-    cart.add(menu_data.get_item("burger_double_cheese"), is_set=True, drink_size="L")
-    cart.add(menu_data.get_item("side_fries"), qty=2)
-    snap = cart.snapshot_favorite()
-    restored = Cart.from_favorite(snap)
-    assert restored.total() == cart.total()
-    assert restored.item_count() == cart.item_count()
-    # 잘못된 즐겨찾기/빈 값 안전
-    assert Cart.from_favorite(None).is_empty()
-    assert Cart.from_favorite({"lines": [{"item_id": "bad"}]}).is_empty()
-
-
 def test_cart_records_and_describe():
     cart = Cart()
     cart.add(menu_data.get_item("drink_cola"), drink_size="L")
@@ -249,10 +235,7 @@ def test_cart_set_customization_single_line():
     cart.add(menu_data.get_item("burger_bulgogi"), is_set=True, drink_size="L",
              drink_id="drink_cider", side_id="side_cheese_stick")
     assert len(cart.lines) == 2
-    # 즐겨찾기 라운드트립에 옵션 보존
-    restored = Cart.from_favorite(cart.snapshot_favorite())
-    assert restored.total() == cart.total()
-    assert restored.lines[0].drink_id == "drink_cola"
+
 
 
 # ══════════════════════════════════════════════
@@ -330,8 +313,36 @@ def test_nlu_empty():
     assert parse_order("아무 의미 없는 문장").intents == []   # 메뉴 없음 → 빈 결과
 
 
+def test_nlu_chinese_menu_and_qty():
+    # 중국어: 수량이 메뉴 '앞'에 옴("两个"=2). 芝士(치즈) 키워드 오타 회귀 방지
+    r = parse_order("两个双层芝士汉堡和薯条")
+    assert r.detected_language == "zh"
+    by = {it.item_id: it for it in r.intents}
+    assert by["burger_double_cheese"].qty == 2
+    assert by["side_fries"].qty == 1                      # 수량 전염 없음
+    r2 = parse_order("一份鲜虾汉堡套餐，配菜换成芝士棒")
+    assert r2.intents[0].item_id == "burger_shrimp" and r2.intents[0].is_set
+    assert r2.intents[0].side_id == "side_cheese_stick"
+    r3 = parse_order("来一份烤肉汉堡套餐，可乐换成大杯")
+    m = r3.intents[0]
+    assert m.item_id == "burger_bulgogi" and m.qty == 1 and m.is_set
+    assert m.drink_id == "drink_cola" and m.drink_size == "L"
+
+
+def test_voice_dialog_examples_all_parse():
+    # 음성 주문 창의 예시 문장(3개 언어)은 모두 메뉴를 담을 수 있어야 함
+    from ui.voice_dialog import VoiceOrderDialog
+    for lang, exs in (("ko", VoiceOrderDialog.EXAMPLES_KO),
+                      ("en", VoiceOrderDialog.EXAMPLES_EN),
+                      ("zh", VoiceOrderDialog.EXAMPLES_ZH)):
+        for ex in exs:
+            r = parse_order(ex)
+            assert r.detected_language == lang, ex
+            assert any(it.item_id for it in r.intents), ex
+
+
 # ══════════════════════════════════════════════
-# 5) 익명 단골 매칭 + DB
+# 5) 데이터베이스 (주문 통계)
 # ══════════════════════════════════════════════
 def _fresh_db():
     from core.database import KioskDatabase
@@ -341,70 +352,15 @@ def _fresh_db():
     return KioskDatabase(p), p
 
 
-def test_regular_match_and_recognize():
-    from core.regulars import RegularManager
+def test_db_order_stats():
     db, p = _fresh_db()
     try:
-        mgr = RegularManager(db)
-        rng = np.random.default_rng(123)
-        face = normalize_vector(rng.random(72))
-        cart = Cart()
-        cart.add(menu_data.get_item("burger_double_cheese"), is_set=True)
-        mgr.register("단골가", face, cart.snapshot_favorite())
-
-        noisy = normalize_vector(face + rng.normal(0, 0.0005, 72))
-        match, sim = mgr.best_match(noisy)
-        assert match["nickname"] == "단골가" and sim > 0.95
-
-        # recognize: 연속 프레임이 쌓여야 확정
-        result = None
-        for _ in range(config.FACE_MATCH_STABLE_FRAMES):
-            result = mgr.recognize(noisy)
-        assert result is not None and result["nickname"] == "단골가"
-
-        other = normalize_vector(rng.random(72))
-        mgr.reset_tracking()
-        assert mgr.recognize(other) is None                  # 남이면 미확정
-    finally:
-        db.close()
-        if p.exists():
-            os.remove(p)
-
-
-def test_db_visit_and_stats():
-    db, p = _fresh_db()
-    try:
-        emb = normalize_vector(np.random.default_rng(1).random(72))
-        rid = db.add_regular("방문왕", emb, {"lines": []})
-        assert db.nickname_exists("방문왕")
-        assert not db.nickname_exists("없는사람")
-        db.update_visit(rid, {"lines": []})
-        regs = db.get_all_regulars()
-        assert regs[0]["visit_count"] == 2                   # 1 → 2 증가
-        assert regs[0]["embedding"].shape[0] == 72           # 임베딩 라운드트립
-
         db.record_order([{"id": "drink_cola", "name": "콜라", "qty": 2}], 4000)
         db.record_order([{"id": "side_fries", "name": "감자튀김", "qty": 1}], 2500)
         s = db.sales_summary()
         assert s["order_count"] == 2
         assert s["total_revenue"] == 6500
         assert s["by_item"].get("콜라") == 2
-    finally:
-        db.close()
-        if p.exists():
-            os.remove(p)
-
-
-def test_suggest_nickname_unique():
-    from core.regulars import RegularManager
-    db, p = _fresh_db()
-    try:
-        mgr = RegularManager(db)
-        n1 = mgr.suggest_nickname("단골")
-        emb = normalize_vector(np.random.default_rng(2).random(72))
-        mgr.register(n1, emb, {"lines": []})
-        n2 = mgr.suggest_nickname("단골")
-        assert n1 != n2                                      # 중복 회피
     finally:
         db.close()
         if p.exists():
@@ -470,18 +426,38 @@ def test_gesture_signs():
 
 
 def test_gesture_swipe():
-    gr = vision_mod.GestureRecognizer()
-    gr.classify(hand_with(True, True, True, True, True, palm=(0.15, 0.5)))
-    name, _ = gr.classify(hand_with(True, True, True, True, True, palm=(0.95, 0.5)))
-    assert name == "swipe_right"
-    gl = vision_mod.GestureRecognizer()
-    gl.classify(hand_with(True, True, True, True, True, palm=(0.95, 0.5)))
-    name2, _ = gl.classify(hand_with(True, True, True, True, True, palm=(0.15, 0.5)))
-    assert name2 == "swipe_left"
+    # 새 파이프라인은 손바닥을 '빠르게'(프레임당 큰 이동) 휘두를 때만 스와이프로 확정한다
+    # (느린 이동=커서/open_palm). One-Euro 필터가 프레임 간 시간에 의존하므로, 시간을
+    # 실제 카메라(약 20fps)처럼 진행시키고 실제 손 크기(hand_scale≈0.10)로 재현한다.
+    def real_hand(px, scale=0.10):
+        lms = [_LM(px, 0.5) for _ in range(21)]
+        lms[9] = _LM(px, 0.5 - scale)                 # 중지뿌리 → hand_scale
+        for mcp, pip, tip, ox in [(5, 6, 8, -0.02), (9, 10, 12, 0.0),
+                                  (13, 14, 16, 0.02), (17, 18, 20, 0.035)]:
+            lms[mcp] = _LM(px + ox, 0.5 - scale)
+            lms[pip] = _LM(px + ox, 0.5 - scale * 1.6)
+            lms[tip] = _LM(px + ox, 0.5 - scale * 2.4)
+        lms[3] = _LM(px - 0.06, 0.5 - scale * 0.6)
+        lms[4] = _LM(px - 0.10, 0.5 - scale)          # 엄지 편 상태
+        return _Hand(lms)
+
+    clock = [1000.0]
+    orig_time = vision_mod.time.time
+    vision_mod.time.time = lambda: (clock.__setitem__(0, clock[0] + 0.05) or clock[0])
+    try:
+        gr = vision_mod.GestureRecognizer()
+        right = [gr.classify(real_hand(p))[0] for p in (0.2, 0.45, 0.7, 0.9)]
+        assert "swipe_right" in right, right
+        clock[0] = 1000.0
+        gl = vision_mod.GestureRecognizer()
+        left = [gl.classify(real_hand(p))[0] for p in (0.9, 0.65, 0.4, 0.15)]
+        assert "swipe_left" in left, left
+    finally:
+        vision_mod.time.time = orig_time
 
 
 # ══════════════════════════════════════════════
-# 8) 연령 추정 + 얼굴 임베딩
+# 8) 연령 추정(기하 휴리스틱 대체 경로)
 # ══════════════════════════════════════════════
 def test_estimate_age_group():
     def face(eye, fh):
@@ -492,18 +468,6 @@ def test_estimate_age_group():
     assert vision_mod.estimate_age_group(face(0.20, 0.30), 480) == "child"    # 0.667
     assert vision_mod.estimate_age_group(face(0.165, 0.30), 480) == "adult"   # 0.55
     assert vision_mod.estimate_age_group(face(0.14, 0.30), 480) == "senior"   # 0.467
-
-
-def test_landmarks_to_embedding():
-    lms = make_landmarks(478)
-    rng = np.random.default_rng(5)
-    for lm in lms:
-        lm.x, lm.y, lm.z = rng.random(), rng.random(), rng.random()
-    emb = vision_mod.landmarks_to_embedding(lms)
-    assert emb.shape[0] == 72
-    assert abs(np.linalg.norm(emb) - 1.0) < 1e-6             # 정규화됨
-    emb2 = vision_mod.landmarks_to_embedding(lms)
-    assert np.allclose(emb, emb2)                            # 결정적
 
 
 # ══════════════════════════════════════════════
@@ -606,27 +570,6 @@ def test_gui_language_switch_by_voice():
         w.close()
 
 
-def test_gui_checkout_reentrancy_guard():
-    # 결제 처리 중 재진입(중첩 이벤트루프로 _checkout 재호출)해도
-    # 단골 등록 제안이 두 번 열리지 않아야 함(대화상자 2개 버그 방지)
-    w, (WEL, MENU, DONE) = _make_window()
-    try:
-        w._go_menu()
-        w._add_to_cart(menu_data.get_item("burger_bulgogi"))
-        w.last_embedding = normalize_vector(np.random.default_rng(9).random(72))
-        w.active_regular = None
-        calls = {"n": 0}
-
-        def fake_offer():
-            calls["n"] += 1
-            w._checkout()                 # 중첩 루프에서 재호출되는 상황 모사
-        w._offer_regular_registration = fake_offer
-        w._checkout()
-        assert calls["n"] == 1            # _busy 가드 덕분에 등록 제안은 단 한 번
-    finally:
-        w.close()
-
-
 def test_gui_gesture_toggle():
     # 손동작을 끄면 제스처가 무시되고, 켜면 다시 동작해야 함
     w, (WEL, MENU, DONE) = _make_window()
@@ -725,6 +668,46 @@ def test_gui_fist_hint_when_cursor_off_card():
         before = w.cart.item_count()
         w._handle_gesture_action("fist")
         assert w.cart.item_count() == before              # 변화 없음(안내만)
+    finally:
+        w.close()
+
+
+def test_gui_contrast_button_sync():
+    # 헤더 고대비 버튼: 켜면 고대비, 끄면 직전 화면. 다른 경로로 바뀌어도 버튼 상태가 맞아야 함
+    w, (WEL, MENU, DONE) = _make_window()
+    try:
+        w._manual_set_mode(config.MODE_SILVER)
+        assert not w.contrast_btn.isChecked()
+        w.contrast_btn.click()                                # 켜기
+        assert w.mode == config.MODE_HIGH_CONTRAST and w.contrast_btn.isChecked()
+        assert w._auto_mode_locked
+        w.contrast_btn.click()                                # 끄기 → 직전 화면(실버)
+        assert w.mode == config.MODE_SILVER and not w.contrast_btn.isChecked()
+        w._manual_set_mode(config.MODE_HIGH_CONTRAST)         # 시연 도구로 켜도 버튼 동기화
+        assert w.contrast_btn.isChecked()
+        w._manual_set_mode(config.MODE_CHILD)
+        assert not w.contrast_btn.isChecked()
+    finally:
+        w.close()
+
+
+def test_gui_voice_result_is_spoken():
+    # 음성 주문 결과(담은 메뉴·합계), 비우기, 못 알아들음을 모두 소리로 안내해야 함
+    w, (WEL, MENU, DONE) = _make_window()
+    said = []
+    try:
+        w.speaker.say = said.append
+        w.tr.set_lang("ko")
+        w._go_menu()
+        w._process_order_text("불고기버거 세트 하나 주세요")
+        total = f"{5500 + menu_data.SET_EXTRA_PRICE:,}"          # 8,200
+        assert any("불고기버거 세트 1개" in s and total in s for s in said), said
+        said.clear()
+        w._process_order_text("전부 삭제해줘")
+        assert said == [TEXTS["ko"]["cleared_tts"]]
+        said.clear()
+        w._process_order_text("오늘 날씨가 좋네요")
+        assert said == [TEXTS["ko"]["not_understood"]]
     finally:
         w.close()
 

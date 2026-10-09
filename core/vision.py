@@ -8,9 +8,12 @@ QThread 기반 비동기 멀티스레딩(계획서 4.3):
   · 분석 결과는 Qt 시그널(signal)로 UI 에 안전하게 전달합니다.
 
 처리 내용
-  1) MediaPipe Face Mesh  → 안면 랜드마크 468개  → 연령대 추정 + 얼굴 임베딩
-  2) MediaPipe Hands      → 손 관절 21개         → 제스처(스와이프/주먹/펼침/수어)
-  3) 히스토그램 평활화로 조명/역광 보정(계획서 4.2)
+  1) MediaPipe Face Mesh  → 얼굴 위치 찾기      → 연령대 분류(어린이/성인/노인) → 화면 자동 전환
+  2) MediaPipe Hands      → 손 관절 21개         → 제스처(에임 커서/핀치·주먹 담기/스와이프)
+  3) 히스토그램 평활화(CLAHE) 계산 — 조명 보정 원리 구현(계획서 4.2).
+     인식(MediaPipe·연령 CNN)에는 학습 조건과 같은 원본 컬러 영상을 그대로 씁니다.
+
+얼굴은 연령대 분류에만 쓰며, 사진·얼굴 특징 숫자를 저장하거나 개인을 식별하지 않습니다.
 
 라이브러리(opencv/mediapipe)나 카메라가 없으면 자동으로 '데모 모드' 로 동작하여
 시그널만 쉬게 두고, UI 의 수동 조작으로 모든 기능을 시연할 수 있습니다.
@@ -18,6 +21,8 @@ QThread 기반 비동기 멀티스레딩(계획서 4.3):
 from __future__ import annotations
 
 import time
+from collections import Counter, deque
+
 import numpy as np
 
 try:
@@ -32,35 +37,18 @@ except Exception:                      # PyQt6 미설치 환경 보호
 
 from config import (
     CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, FACE_MAX_NUM, HAND_MAX_NUM,
-    MOVING_AVERAGE_WINDOW, SWIPE_MIN_DISTANCE, SWIPE_COOLDOWN_MS, FIST_HOLD_FRAMES,
-    AGE_INFER_EVERY,
+    SWIPE_MIN_DISTANCE, SWIPE_COOLDOWN_MS, FIST_HOLD_FRAMES, AGE_INFER_EVERY,
+    FINGER_EXTEND_RATIO, FINGER_FOLD_RATIO, FINGER_ANGLE_EXTEND_DEG,
+    FINGER_ANGLE_FOLD_DEG, GESTURE_VOTE_WINDOW, GESTURE_VOTE_MIN, PINCH_RATIO,
+    ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF, AIM_USE_PALM,
 )
-from core.mathutils import MovingAverageFilter, normalize_vector, equalize_lighting
+from core.mathutils import OneEuroFilter, cosine_similarity, equalize_lighting
 from core.age_model import AgeEstimator
 
 
 # ──────────────────────────────────────────────
-# 얼굴 임베딩 / 연령 추정 도우미 함수
+# 얼굴 위치 / 연령 추정 도우미 함수
 # ──────────────────────────────────────────────
-def landmarks_to_embedding(landmarks) -> np.ndarray:
-    """468개 얼굴 랜드마크를 '코를 기준으로 정규화한 숫자 배열'로 바꿉니다.
-
-    개인정보 보호: 사진이 아니라 좌표의 상대적 모양만 남깁니다(계획서 2.2).
-    얼굴 위치·크기가 달라져도 같은 사람은 비슷한 벡터가 나오도록 정규화합니다.
-    """
-    pts = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
-    nose = pts[1]                       # 코끝(1번)을 원점으로
-    pts = pts - nose
-    scale = np.linalg.norm(pts, axis=1).max()
-    if scale > 0:
-        pts = pts / scale               # 얼굴 크기에 상관없이 비교 가능하도록 정규화
-    # 식별에 중요한 주요 랜드마크만 추려서 가벼운 임베딩 생성
-    key_idx = [33, 133, 362, 263, 1, 61, 291, 199, 168, 6, 197, 195,
-               5, 4, 98, 327, 0, 17, 13, 14, 78, 308, 234, 454]
-    emb = pts[key_idx].flatten()
-    return normalize_vector(emb)
-
-
 def landmarks_to_bbox(landmarks, frame_w: int, frame_h: int):
     """얼굴 랜드마크(정규화 0~1 좌표)에서 픽셀 단위 경계상자를 만듭니다.
 
@@ -102,15 +90,33 @@ def estimate_age_group(landmarks, frame_h: int) -> str:
 class GestureRecognizer:
     """손 관절 21개 좌표로 제스처를 판별하는 클래스.
 
-    인식 제스처(계획서 2.3):
-      · 손바닥 펼쳐 좌/우로 휘두르기 → swipe_left / swipe_right (카테고리 넘기기)
-      · 주먹 쥐기                    → fist (장바구니에 담기)
-      · 검지로 가리키기              → point (커서 이동, 이동평균 필터 적용)
-      · 간단 수어(엄지척/V/하이파이브) → sign_yes / sign_two / sign_hello
+    인식 제스처(안정적인 '에임 + 핀치 + 드웰' 조합):
+      · 손을 편하게 들기(펼친 손/검지/V)  → point / open_palm / sign_two / idle (커서 이동)
+      · 핀치(엄지·검지 집기) / 주먹  → fist (가리킨 메뉴 담기)
+      · 손바닥 펴서 좌/우로 휘두르기 → swipe_left / swipe_right (카테고리 넘기기)
+      · 엄지척                      → sign_yes (팝업 '예' 확인. 메뉴에선 주먹과 같게 처리, 결제엔 안 씀)
+
+    정확도 개선(플리커/떨림/오인식 억제):
+      · 손가락 펴짐 판정에 히스테리시스(이중 임계값) + 관절 각도 병행
+      · 손 모양을 최근 N프레임 다수결로 확정(순간 오발 제거)
+      · 커서를 One-Euro 필터로 스무딩(가리키기 커서 떨림 제거)
+      · 손 크기로 스와이프/핀치 임계를 정규화(카메라 거리 무관)
     """
 
+    # 손가락별 (tip, pip, mcp) 랜드마크 번호
+    _FINGERS = {8: (8, 6, 5), 12: (12, 10, 9), 16: (16, 14, 13), 20: (20, 18, 17)}
+
     def __init__(self):
-        self.filter = MovingAverageFilter(MOVING_AVERAGE_WINDOW)
+        # 커서용 One-Euro 필터(검지 끝 / 손바닥 중심을 각각 x·y로 스무딩)
+        self._tip_fx = OneEuroFilter(ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF)
+        self._tip_fy = OneEuroFilter(ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF)
+        self._palm_fx = OneEuroFilter(ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF)
+        self._palm_fy = OneEuroFilter(ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF)
+        # 손가락 펴짐 상태 캐시(히스테리시스: 경계에서 직전 상태 유지)
+        self._finger_state: dict[int, bool] = {8: False, 12: False, 16: False, 20: False}
+        self._thumb_state = False
+        # 손 모양 다수결 투표 큐
+        self._pose_votes: deque[tuple] = deque(maxlen=GESTURE_VOTE_WINDOW)
         self._last_x: float | None = None
         self._last_swipe_t = 0.0
         self._fist_frames = 0
@@ -121,42 +127,102 @@ class GestureRecognizer:
         """두 랜드마크 사이의 평면 거리."""
         return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
 
-    def _finger_extended(self, lm, tip, pip, k: float = 1.05) -> bool:
-        """손가락이 펴졌는지 판별.
+    @staticmethod
+    def _joint_angle(a, b, c) -> float:
+        """관절 b에서 벡터 b→a 와 b→c 사이의 각도(도). 손가락 펴짐 판정용.
 
-        손목(0번)에서 '손끝(tip)'이 '둘째마디(pip)'보다 멀리 있으면 펴진 것으로 본다.
-        단순 y 비교와 달리 손이 기울거나 옆으로 누워도 안정적으로 동작한다(강건성).
+        코사인 유사도 공식 (A·B)/(‖A‖‖B‖) 로 cosθ 를 구한 뒤 arccos 로 각도를 얻습니다.
         """
+        v1 = np.array([a.x - b.x, a.y - b.y])
+        v2 = np.array([c.x - b.x, c.y - b.y])
+        if not np.any(v1) or not np.any(v2):
+            return 180.0
+        cosang = float(np.clip(cosine_similarity(v1, v2), -1.0, 1.0))
+        return float(np.degrees(np.arccos(cosang)))
+
+    def _finger_extended(self, lm, tip: int) -> bool:
+        """손가락이 펴졌는지 판별 — 거리비 + 관절 각도 + 히스테리시스.
+
+        · 거리비: 손목에서 손끝이 둘째마디보다 얼마나 더 먼가.
+        · 각도: PIP 관절이 얼마나 펴졌는가(손이 기울어도 강건).
+        · 히스테리시스: 확실할 때만 상태를 바꾸고, 경계(애매)에서는 직전 상태 유지
+          → 경계에서 매 프레임 뒤집히는 '플리커'를 근본적으로 제거.
+        """
+        t, pip, mcp = self._FINGERS[tip]
         w = lm[0]
-        return self._dist(lm[tip], w) > self._dist(lm[pip], w) * k
+        ratio = self._dist(lm[t], w) / (self._dist(lm[pip], w) + 1e-9)
+        angle = self._joint_angle(lm[mcp], lm[pip], lm[t])
+        prev = self._finger_state[tip]
+        if ratio >= FINGER_EXTEND_RATIO and angle >= FINGER_ANGLE_EXTEND_DEG:
+            state = True                                   # 확실히 펴짐
+        elif ratio <= FINGER_FOLD_RATIO or angle <= FINGER_ANGLE_FOLD_DEG:
+            state = False                                  # 확실히 접힘
+        else:
+            state = prev                                   # 경계 → 직전 상태 유지
+        self._finger_state[tip] = state
+        return state
+
+    def _thumb_extended(self, lm) -> bool:
+        """엄지 펴짐 판별(각도 랜드마크가 불안정해 거리비 히스테리시스만 사용)."""
+        w = lm[0]
+        ratio = self._dist(lm[4], w) / (self._dist(lm[3], w) + 1e-9)
+        if ratio >= 1.25:
+            self._thumb_state = True
+        elif ratio <= 1.05:
+            self._thumb_state = False
+        return self._thumb_state
 
     def classify(self, hand_landmarks) -> tuple[str, tuple[float, float]]:
-        """제스처 이름과 (정규화된 손 위치)를 돌려줍니다."""
+        """제스처 이름과 (정규화된 커서 위치)를 돌려줍니다."""
         lm = hand_landmarks.landmark
-        # 손가락 펴짐 상태(손목 기준 거리) [엄지, 검지, 중지, 약지, 새끼]
-        index = self._finger_extended(lm, 8, 6)
-        middle = self._finger_extended(lm, 12, 10)
-        ring = self._finger_extended(lm, 16, 14)
-        pinky = self._finger_extended(lm, 20, 18)
-        thumb = self._finger_extended(lm, 4, 3, k=1.2)   # 엄지는 더 또렷할 때만
-        n_main = sum([index, middle, ring, pinky])       # 엄지 제외 네 손가락
-
-        # 손바닥 중심(0번 손목 ~ 9번 중지뿌리 평균)을 커서 위치로 사용
-        cx = (lm[0].x + lm[9].x) / 2
-        cy = (lm[0].y + lm[9].y) / 2
-        sx, sy = self.filter.update(cx, cy)   # 이동평균 필터로 떨림 제거
-
         now = time.time() * 1000
+        # 손 크기(손목0~중지뿌리9): 스와이프·핀치 임계를 카메라 거리와 무관하게 정규화.
+        hand_scale = self._dist(lm[0], lm[9]) or 1e-6
 
-        # 1) 검지만 펴짐 → 포인팅(커서 이동). 가장 먼저 판정(가리키기 우선).
+        # 손가락 펴짐 상태(히스테리시스+각도)
+        index = self._finger_extended(lm, 8)
+        middle = self._finger_extended(lm, 12)
+        ring = self._finger_extended(lm, 16)
+        pinky = self._finger_extended(lm, 20)
+        thumb = self._thumb_extended(lm)
+        # 핀치(집기): 엄지끝~검지끝 거리를 손 크기로 정규화
+        pinch = (self._dist(lm[4], lm[8]) / hand_scale) < PINCH_RATIO
+
+        # ── 다중 프레임 다수결: 최근 N프레임 손모양이 과반일 때만 그 모양으로 확정 ──
+        pattern = (index, middle, ring, pinky, thumb, pinch)
+        self._pose_votes.append(pattern)
+        top, cnt = Counter(self._pose_votes).most_common(1)[0]
+        if cnt >= GESTURE_VOTE_MIN:
+            index, middle, ring, pinky, thumb, pinch = top
+        n_main = sum([index, middle, ring, pinky])
+
+        # 커서 좌표(One-Euro 스무딩): 검지 끝 / 손바닥 중심
+        tip_x = self._tip_fx.filter(lm[8].x, now)
+        tip_y = self._tip_fy.filter(lm[8].y, now)
+        palm_x = self._palm_fx.filter((lm[0].x + lm[9].x) / 2, now)
+        palm_y = self._palm_fy.filter((lm[0].y + lm[9].y) / 2, now)
+
+        # 0) 핀치(집기) → 담기. 주먹보다 안정적이라 먼저 판정.
+        if pinch:
+            self._last_x = None
+            self._signyes_frames = 0
+            self._fist_frames += 1
+            if self._fist_frames >= FIST_HOLD_FRAMES:
+                self._fist_frames = 0
+                return "fist", (tip_x, tip_y)
+            return "fist_hold", (tip_x, tip_y)
+
+        # 1) 검지만 펴짐 → 포인팅(커서 이동). 가리키기 우선.
         if index and not middle and not ring and not pinky:
             self._fist_frames = 0
             self._last_x = None
-            return "point", (lm[8].x, lm[8].y)
+            # 에임(커서)은 손바닥 중심이 더 안정적. 정밀 포인팅이 필요하면 손끝 사용.
+            if AIM_USE_PALM:
+                return "point", (palm_x, palm_y)
+            return "point", (tip_x, tip_y)
 
-        # 2) 네 손가락이 접힘(닫힌 손) → 담기(fist). 엄지가 또렷이 펴지면 확인(sign_yes).
-        #    핵심: 엄지가 어떻든 손이 닫히면 'fist' 로 본다(주먹 인식 누락 방지).
-        #    오발 방지: fist/sign_yes 모두 몇 프레임 '유지'돼야 확정한다(엄지 깜빡임 무시).
+        # 2) 네 손가락이 접힘(닫힌 손) → 담기(fist). 엄지가 또렷하면 확인(sign_yes).
+        #    fist/sign_yes 모두 몇 프레임 '유지'돼야 확정(엄지 깜빡임 무시).
         if n_main == 0:
             self._last_x = None
             if thumb:
@@ -164,38 +230,40 @@ class GestureRecognizer:
                 self._signyes_frames += 1
                 if self._signyes_frames >= FIST_HOLD_FRAMES:
                     self._signyes_frames = 0
-                    return "sign_yes", (sx, sy)      # 엄지척 = 네/확인(유지 확정)
-                return "sign_hold", (sx, sy)
+                    return "sign_yes", (palm_x, palm_y)
+                return "sign_hold", (palm_x, palm_y)
             self._signyes_frames = 0
             self._fist_frames += 1
             if self._fist_frames >= FIST_HOLD_FRAMES:
                 self._fist_frames = 0
-                return "fist", (sx, sy)
-            return "fist_hold", (sx, sy)
+                return "fist", (palm_x, palm_y)
+            return "fist_hold", (palm_x, palm_y)
         self._fist_frames = 0
         self._signyes_frames = 0
 
         # 3) 검지+중지만 → V(둘)
         if index and middle and not ring and not pinky:
-            return "sign_two", (sx, sy)
+            return "sign_two", (palm_x, palm_y)
 
         # 4) 손가락 다수 펼침 → 좌우 스와이프 / 손바닥
         if n_main >= 3:
+            # 스와이프 최소 이동량을 손 크기로 정규화(멀든 가깝든 일관).
+            min_dist = SWIPE_MIN_DISTANCE * (hand_scale / 0.18)
             if self._last_x is not None and (now - self._last_swipe_t) > SWIPE_COOLDOWN_MS:
-                dx = sx - self._last_x
-                if dx > SWIPE_MIN_DISTANCE:
+                dx = palm_x - self._last_x
+                if dx > min_dist:
                     self._last_swipe_t = now
-                    self._last_x = sx
-                    return "swipe_right", (sx, sy)
-                if dx < -SWIPE_MIN_DISTANCE:
+                    self._last_x = palm_x
+                    return "swipe_right", (palm_x, palm_y)
+                if dx < -min_dist:
                     self._last_swipe_t = now
-                    self._last_x = sx
-                    return "swipe_left", (sx, sy)
-            self._last_x = sx
-            return "open_palm", (sx, sy)
+                    self._last_x = palm_x
+                    return "swipe_left", (palm_x, palm_y)
+            self._last_x = palm_x
+            return "open_palm", (palm_x, palm_y)
 
-        self._last_x = sx
-        return "idle", (sx, sy)
+        self._last_x = palm_x
+        return "idle", (palm_x, palm_y)
 
 
 # ──────────────────────────────────────────────
@@ -206,7 +274,6 @@ if _QT:
         """카메라를 읽어 얼굴/손을 분석하고 결과를 시그널로 보내는 스레드."""
 
         # UI 로 보내는 신호들
-        face_embedding = pyqtSignal(object)     # np.ndarray (얼굴 임베딩 벡터)
         age_group = pyqtSignal(str)             # "child"/"adult"/"senior"
         face_present = pyqtSignal(bool)         # 얼굴 감지 여부
         gesture = pyqtSignal(str, float, float)  # 제스처 이름, 커서 x, 커서 y
@@ -293,8 +360,6 @@ if _QT:
                         if not last_face_state:
                             self.face_present.emit(True)
                             last_face_state = True
-                        emb = landmarks_to_embedding(lms)
-                        self.face_embedding.emit(emb)
                         # 연령(어린이/성인/노인): 학습된 CNN 우선, 없으면 기하 휴리스틱.
                         # 추론이 무거우므로 N프레임마다 1회만 실행합니다.
                         group = None

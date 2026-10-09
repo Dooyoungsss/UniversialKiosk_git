@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import (Qt, QTimer, pyqtSignal, QPropertyAnimation, QPoint,
                           QRect, QSize)
+from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QPushButton,
                              QSizePolicy, QVBoxLayout, QWidget,
                              QGraphicsOpacityEffect)
@@ -154,7 +155,6 @@ class MenuCard(QPushButton):
             badge = QLabel("BEST")
             badge.setObjectName("Badge")
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            badge.setMaximumWidth(80)
             wrap = QHBoxLayout()
             wrap.addStretch()
             wrap.addWidget(badge)
@@ -172,22 +172,15 @@ class CartItemRow(QFrame):
         super().__init__(parent)
         self.index = index
         self.setObjectName("Panel")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(8)
 
         emoji = QLabel(line.item.emoji)
         emoji.setStyleSheet("font-size:26pt;")
 
-        info = QVBoxLayout()
-        info.setSpacing(2)
         name = QLabel(line.describe(lang))
         name.setStyleSheet("font-weight:700;")
         name.setWordWrap(True)
         price = QLabel(f"{line.line_total():,}{won}")
         price.setObjectName("Price")
-        info.addWidget(name)
-        info.addWidget(price)
 
         minus = QPushButton("−")
         plus = QPushButton("＋")
@@ -208,12 +201,23 @@ class CartItemRow(QFrame):
         plus.clicked.connect(lambda: self.qty_changed.emit(self.index, +1))
         remove.clicked.connect(lambda: self.removed.emit(self.index))
 
-        lay.addWidget(emoji)
-        lay.addLayout(info, 1)
-        lay.addWidget(minus)
-        lay.addWidget(qty)
-        lay.addWidget(plus)
-        lay.addWidget(remove)
+        # 두 줄 배치(위: 메뉴 이름, 아래: 가격·수량·삭제) — 글자가 커지는 모드에서도 버튼이 잘리지 않게
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 5, 10, 5)
+        outer.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(emoji)
+        top.addWidget(name, 1)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        bottom.addWidget(price, 1)
+        bottom.addWidget(minus)
+        bottom.addWidget(qty)
+        bottom.addWidget(plus)
+        bottom.addWidget(remove)
+        outer.addLayout(top)
+        outer.addLayout(bottom)
 
 
 class GestureCursor(QLabel):
@@ -229,6 +233,7 @@ class GestureCursor(QLabel):
             "border:3px solid #2D6CDF; border-radius:27px;")
         # 커서는 클릭/히트테스트 대상이 아님 → 아래 메뉴 카드를 childAt 으로 찾을 수 있게
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._progress = 0.0                 # 드웰 진행률(0~1) — 진행 링으로 표시
         self.hide()
 
     def move_norm(self, parent_w: int, parent_h: int, nx: float, ny: float) -> None:
@@ -239,6 +244,30 @@ class GestureCursor(QLabel):
         if not self.isVisible():
             self.show()
         self.raise_()
+
+    def set_progress(self, fraction: float) -> None:
+        """드웰(머무름) 선택 진행률을 커서 둘레의 링으로 표시합니다(0~1)."""
+        f = max(0.0, min(1.0, fraction))
+        if abs(f - self._progress) < 0.01:
+            return
+        self._progress = f
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self._progress <= 0.0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#22C55E"), 5)     # 초록 진행 링
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        m = 4
+        rect = QRect(m, m, self.width() - 2 * m, self.height() - 2 * m)
+        start = 90 * 16                       # 12시 방향에서 시작
+        span = -int(360 * 16 * self._progress)  # 시계방향으로 채움
+        painter.drawArc(rect, start, span)
+        painter.end()
 
 
 class Toast(QLabel):

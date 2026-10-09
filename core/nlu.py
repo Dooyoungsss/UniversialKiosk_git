@@ -1,12 +1,12 @@
 """
-core/nlu.py — LLM 기반 자연어 주문 비서 (계획서 2.4 / 4.4)
+core/nlu.py — 자연어 주문 분석기 (음성 주문 · 다국어)
 ================================================
-사용자가 말한 복잡한 문장을 분석해 '장바구니 명령(JSON)' 으로 바꿉니다.
+사용자가 말한(또는 입력한) 문장을 분석해 '장바구니 명령' 으로 바꿉니다.
 
-두 가지 방식으로 동작합니다(둘 다 같은 JSON 형식을 돌려줌):
-  1) 온라인:  OPENAI_API_KEY 가 있으면 GPT 로 정밀 분석(계획서 4.4 프롬프트 엔지니어링)
-  2) 오프라인: 키가 없으면 자체 룰(규칙) 기반 분석기로 동작
-              → 인터넷/결제 없이도 대회 시연이 항상 되도록 보장!
+· 인터넷·API 키 없이 항상 동작하는 오프라인 규칙(룰) 기반 분석기입니다.
+  → 대회장 네트워크 상태와 상관없이 같은 결과를 내도록 안정성을 우선했습니다.
+· 한국어 · 영어 · 중국어 문장을 모두 이해하고, 문장 언어를 감지해
+  화면 언어를 자동으로 바꿀 수 있게 알려줍니다.
 
 예) "불고기버거 세트 하나 주시는데 음료는 콜라 라지로 바꾸고
      사이드는 치즈스틱으로 바꿀게요"
@@ -15,13 +15,11 @@ core/nlu.py — LLM 기반 자연어 주문 비서 (계획서 2.4 / 4.4)
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from core import menu_data
-from config import USE_LLM, OPENAI_API_KEY, OPENAI_MODEL
 
 
 # ──────────────────────────────────────────────
@@ -30,7 +28,7 @@ from config import USE_LLM, OPENAI_API_KEY, OPENAI_MODEL
 @dataclass
 class OrderIntent:
     """문장 하나에서 뽑아낸 '하나의 주문 의도'."""
-    action: str = "add"               # add(담기) / remove(빼기) / clear(비우기) / checkout(결제)
+    action: str = "add"               # add(담기) / clear(비우기) / checkout(결제)
     item_id: Optional[str] = None
     qty: int = 1
     is_set: bool = False
@@ -42,9 +40,7 @@ class OrderIntent:
 @dataclass
 class NLUResult:
     intents: list[OrderIntent] = field(default_factory=list)
-    detected_language: str = "ko"     # 감지한 언어(ko/en)
-    raw_reply: str = ""               # LLM 원문(디버깅용)
-    used_llm: bool = False
+    detected_language: str = "ko"     # 감지한 언어(ko/en/zh)
 
 
 # 한국어 수량 표현
@@ -63,6 +59,12 @@ _EN_NUM = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
+# · 중국어 수사(메뉴 앞에 옴): "两个汉堡", "一份套餐"
+_ZH_NUM = {
+    "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+_ZH_COUNTER = "个|份|杯|块|套|瓶|盒"
 # 수량 뒤에 붙는 단위(카운터)
 _COUNTER = "개|잔|컵|봉|조각|세트|set"
 
@@ -85,22 +87,15 @@ def detect_language(text: str) -> str:
 # 메인 진입점
 # ──────────────────────────────────────────────
 def parse_order(text: str) -> NLUResult:
-    """자연어 주문 문장을 분석합니다. LLM 우선, 실패 시 룰 기반."""
+    """자연어 주문 문장을 분석합니다(오프라인 규칙 기반)."""
     text = (text or "").strip()
     if not text:
         return NLUResult()
-
-    if USE_LLM:
-        try:
-            return _parse_with_llm(text)
-        except Exception:
-            # LLM 호출 실패(네트워크/키 오류 등) → 자동으로 오프라인 분석으로 대체
-            pass
     return _parse_with_rules(text)
 
 
 # ──────────────────────────────────────────────
-# (1) 오프라인 룰 기반 분석기 — 인터넷 없이 항상 동작
+# 오프라인 룰 기반 분석기 — 인터넷 없이 항상 동작
 # ──────────────────────────────────────────────
 def _find_menu_in_text(text: str, category: Optional[str] = None):
     """문장 안에서 메뉴 키워드를 찾아 (MenuItem, 매칭위치) 목록을 돌려줍니다."""
@@ -158,21 +153,24 @@ def _extract_qty(text: str, around: int) -> int:
     """메뉴 키워드 주변에서 수량을 찾습니다.
 
     한국어는 수량이 메뉴 '뒤'에 오고(예: "버거 두 개"),
-    영어는 메뉴 '앞'에 옵니다(예: "two burgers").
+    영어·중국어는 메뉴 '앞'에 옵니다(예: "two burgers", "两个汉堡").
     부분일치 오인('세트'의 '세'=3, '한우'의 '한'=1)과
     옆 메뉴 수량 전염을 막기 위해 카운터·단독수사·앞숫자를 구분해 처리합니다.
     """
     low = text.lower()
     after = text[around: around + 14]          # 키워드 뒤쪽(한국어 수량)
-    before = low[max(0, around - 10): around]  # 키워드 앞쪽(영어/숫자 수량)
+    before = low[max(0, around - 10): around]  # 키워드 앞쪽(영어/중국어/숫자 수량)
 
-    # 1) 메뉴 바로 앞의 숫자/영어 수사 (예: "2 burgers", "two burgers")
+    # 1) 메뉴 바로 앞의 숫자/영어·중국어 수사 (예: "2 burgers", "two burgers", "两个汉堡")
     m = re.search(r"(\d+)\s*$", before)
     if m:
         return max(1, int(m.group(1)))
     for word, n in _EN_NUM.items():
         if re.search(rf"\b{word}\b\s*$", before):
             return n
+    m = re.search(rf"([一两二三四五六七八九十])\s*(?:{_ZH_COUNTER})?\s*$", before)
+    if m:
+        return _ZH_NUM[m.group(1)]
 
     # 2) 메뉴 뒤의 숫자 (+선택 카운터) (예: "버거 3개")
     m = re.search(rf"(\d+)\s*(?:{_COUNTER})?", after)
@@ -194,7 +192,7 @@ def _extract_qty(text: str, around: int) -> int:
 def _parse_with_rules(text: str) -> NLUResult:
     """규칙 기반 자연어 분석(핵심 차별화 로직)."""
     lang = detect_language(text)
-    result = NLUResult(detected_language=lang, used_llm=False)
+    result = NLUResult(detected_language=lang)
     low = text.lower()
 
     # 전체 비우기 / 결제 의도 먼저 확인
@@ -264,86 +262,4 @@ def _parse_with_rules(text: str) -> NLUResult:
                 drink_size=drink_size,
             ))
 
-    return result
-
-
-# ──────────────────────────────────────────────
-# (2) LLM(GPT) 기반 분석기 — 계획서 4.4 프롬프트 엔지니어링
-# ──────────────────────────────────────────────
-def _build_menu_catalog() -> str:
-    """LLM 에게 알려줄 메뉴 목록 텍스트를 만듭니다."""
-    lines = []
-    for m in menu_data.MENU:
-        zh = m.name_zh or m.name_en
-        lines.append(f"- {m.item_id} | {m.name_ko} / {m.name_en} / {zh} | {m.category} | {m.price}원")
-    return "\n".join(lines)
-
-
-# 영문 시스템 프롬프트(계획서 4.4: 영어 역량 — System Role + Few-shot)
-SYSTEM_PROMPT = """You are an order-parsing assistant for a hamburger kiosk.
-Read the customer's natural sentence (Korean, English, or Chinese) and return ONLY a JSON object.
-
-Available menu (use the exact item_id):
-{catalog}
-
-JSON schema:
-{{
-  "language": "ko" or "en" or "zh",
-  "intents": [
-    {{
-      "action": "add" | "remove" | "clear" | "checkout",
-      "item_id": "<one of the item_id above or null>",
-      "qty": <integer>,
-      "is_set": <true/false>,
-      "drink_id": "<drink item_id or null>",
-      "drink_size": "M" | "L",
-      "side_id": "<side item_id or null>"
-    }}
-  ]
-}}
-
-Rules:
-- "세트"/"set"/"套餐" => is_set true. "라지"/"large"/"大杯" => drink_size "L".
-- If the customer changes the set drink, fill drink_id. If they change the side, fill side_id.
-- Detect the language of the sentence (ko/en/zh) and put it in "language".
-- Return JSON only, no explanation.
-
-Example:
-Input: "불고기버거 세트 하나 주시는데 음료는 콜라 라지로 바꾸고 사이드는 치즈스틱으로 바꿀게요"
-Output: {{"language":"ko","intents":[{{"action":"add","item_id":"burger_bulgogi","qty":1,"is_set":true,"drink_id":"drink_cola","drink_size":"L","side_id":"side_cheese_stick"}}]}}
-"""
-
-
-def _parse_with_llm(text: str) -> NLUResult:
-    """OpenAI GPT 로 주문 문장을 분석합니다."""
-    from openai import OpenAI       # 지연 임포트(키가 있을 때만 필요)
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    system = SYSTEM_PROMPT.format(catalog=_build_menu_catalog())
-    completion = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": text},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    raw = completion.choices[0].message.content or "{}"
-    data = json.loads(raw)
-
-    result = NLUResult(
-        detected_language=data.get("language", detect_language(text)),
-        raw_reply=raw, used_llm=True,
-    )
-    for it in data.get("intents", []):
-        result.intents.append(OrderIntent(
-            action=it.get("action", "add"),
-            item_id=it.get("item_id"),
-            qty=int(it.get("qty", 1) or 1),
-            is_set=bool(it.get("is_set", False)),
-            drink_id=it.get("drink_id"),
-            drink_size=it.get("drink_size", "M") or "M",
-            side_id=it.get("side_id"),
-        ))
     return result

@@ -102,43 +102,6 @@ def test_nlu_english_detection():
 
 
 # ──────────────────────────────────────────────
-# 4) 익명 단골 매칭 (계획서 2.2) — 코사인 유사도 기반
-# ──────────────────────────────────────────────
-def test_regular_recognition():
-    import config
-    from core.database import KioskDatabase
-    from core.regulars import RegularManager
-
-    test_db = config.DATA_DIR / "_pytest.db"
-    if test_db.exists():
-        os.remove(test_db)
-    db = KioskDatabase(test_db)
-    try:
-        mgr = RegularManager(db)
-        rng = np.random.default_rng(123)
-        face = normalize_vector(rng.random(72))
-        cart = Cart()
-        cart.add(menu_data.get_item("burger_double_cheese"), is_set=True)
-        mgr.register("치즈버거매니아", face, cart.snapshot_favorite())
-
-        # 거의 같은 얼굴(약간의 노이즈) → 같은 사람으로 인식되어야 함
-        noisy = normalize_vector(face + rng.normal(0, 0.0005, 72))
-        match, sim = mgr.best_match(noisy)
-        assert match is not None
-        assert match["nickname"] == "치즈버거매니아"
-        assert sim > 0.95
-
-        # 완전히 다른 얼굴 → 유사도가 낮아야 함
-        other = normalize_vector(rng.random(72))
-        _, sim2 = mgr.best_match(other)
-        assert sim2 < sim
-    finally:
-        db.close()
-        if test_db.exists():
-            os.remove(test_db)
-
-
-# ──────────────────────────────────────────────
 # pytest 없이 직접 실행할 때
 # ──────────────────────────────────────────────
 def _run_all():

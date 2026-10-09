@@ -23,7 +23,3 @@ pyttsx3>=2.90         # 오프라인 음성 읽기
 # Google STT 를 쓰므로 인터넷이 필요합니다(없으면 직접 입력으로 안내).
 SpeechRecognition>=3.10
 PyAudio>=0.2.13
-
-# ── 선택: LLM(GPT) 자연어 분석 — 환경변수 OPENAI_API_KEY 설정 시 활성화 ──
-# 없으면 자체 '오프라인 룰 기반 NLU' 로 동작합니다.
-# openai>=1.0

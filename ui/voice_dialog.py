@@ -2,16 +2,18 @@
 ui/voice_dialog.py — 음성 주문 입력 창 (계획서 2.4)
 ================================================
 마이크로 말하거나(STT) 텍스트로 주문 문장을 입력받아
-LLM/룰 기반 NLU 로 분석하는 대화창입니다.
+오프라인 규칙 기반 NLU 로 분석하는 대화창입니다.
 
 · 🎙 말하기 → 마이크로 말하면 글자로 받아 적어 줍니다(Google STT).
 · 마이크 듣기는 별도 스레드(QThread)에서 처리해 화면이 멈추지 않습니다.
 · 예시 문장 버튼을 누르면 자동으로 채워져 시연이 편합니다.
 · 마이크/인터넷이 없으면 버튼이 비활성화되고 직접 입력으로 안내합니다.
+· 안내·인식 결과·실패 이유를 모두 소리(TTS)로도 알려 줍니다(눈이 불편한 손님).
 """
 from __future__ import annotations
 
 import importlib.util
+import time
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
@@ -19,6 +21,7 @@ from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
 
 import config
 from core.i18n import Translator
+from ui.widgets import GestureCursor
 
 # STT(음성인식)에 쓸 Google 언어 코드(언어별)
 STT_LANG_CODE = {"ko": "ko-KR", "en": "en-US", "zh": "zh-CN"}
@@ -96,16 +99,19 @@ class VoiceOrderDialog(QDialog):
     EXAMPLES_ZH = [
         "来一份烤肉汉堡套餐，可乐换成大杯",
         "两个双层芝士汉堡和薯条",
-        "一份鲜虾汉堡套餐，配菜换成苕士棒",
+        "一份鲜虾汉堡套餐，配菜换成芝士棒",
     ]
 
     def __init__(self, lang: str, hint: str, listening_text: str, parent=None,
-                 speaker=None, auto_listen: bool = False):
+                 speaker=None, auto_listen: bool = False, theme=None):
         super().__init__(parent)
         self.lang = lang
         self.tr = Translator(lang)
         self.speaker = speaker            # 음성 안내(TTS) 엔진(없으면 조용히 무시)
         self._worker: SpeechWorker | None = None
+        # 고대비 등 현재 화면 테마의 색을 따라야 저시력자도 안내 글씨를 읽을 수 있음
+        sub_color = theme.sub_text if theme else "#5C6B82"
+        accent = theme.primary if theme else "#2D6CDF"
         self.setWindowTitle("🎤 " + self.tr.t("voice_title"))
         self.setMinimumWidth(640)
 
@@ -119,24 +125,24 @@ class VoiceOrderDialog(QDialog):
 
         sub = QLabel(hint)
         sub.setWordWrap(True)
-        sub.setStyleSheet("color:#5C6B82;")
+        sub.setStyleSheet(f"color:{sub_color};")
         lay.addWidget(sub)
 
         self.input = QLineEdit()
         self.input.setPlaceholderText(listening_text)
         self.input.setStyleSheet("font-size:18pt; padding:12px; border-radius:12px;"
-                                 "border:2px solid #2D6CDF;")
+                                 f"border:2px solid {accent};")
         self.input.returnPressed.connect(self.accept)
         lay.addWidget(self.input)
 
         # 마이크 상태 안내 줄
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color:#2D6CDF; font-weight:700;")
+        self.status_label.setStyleSheet(f"color:{accent}; font-weight:700;")
         lay.addWidget(self.status_label)
 
         # 예시 문장 버튼들(시연 편의)
         ex_label = QLabel(self.tr.t("examples_label"))
-        ex_label.setStyleSheet("color:#5C6B82; font-weight:700;")
+        ex_label.setStyleSheet(f"color:{sub_color}; font-weight:700;")
         lay.addWidget(ex_label)
         examples = {"ko": self.EXAMPLES_KO, "en": self.EXAMPLES_EN,
                     "zh": self.EXAMPLES_ZH}.get(lang, self.EXAMPLES_EN)
@@ -172,9 +178,19 @@ class VoiceOrderDialog(QDialog):
 
         # 손동작 힌트(카메라 제스처로 다이얼로그를 조작할 수 있음을 안내)
         self.gesture_hint_label = QLabel(self.tr.t("voice_gesture_hint"))
-        self.gesture_hint_label.setStyleSheet("color:#8A9BAE; font-size:9pt;")
+        self.gesture_hint_label.setStyleSheet(f"color:{sub_color}; font-size:9pt;")
         self.gesture_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.gesture_hint_label)
+
+        # ── 제스처 에임 커서 + 드웰(머무름) 클릭 ─────────────────
+        # 메뉴 화면처럼 손을 움직여 커서를 옮기고, 버튼 위에 잠시 멈추면(드웰)
+        # 자동으로 눌립니다. 마이크(다시 말하기) 버튼도 손으로 다시 켤 수 있습니다.
+        self._dwell_target: QPushButton | None = None
+        self._dwell_start_ms = 0.0
+        self._dwell_x = 0.5
+        self._dwell_y = 0.5
+        self._last_dwell_ms = 0.0
+        self.cursor = GestureCursor(self)   # 창 위에 그려지는 손 커서(맨 위 z-order)
 
         # 창이 열리면 음성으로 주문 방법을 안내합니다(배리어프리 핵심).
         self._say(self.tr.t("voice_guide_tts"))
@@ -215,6 +231,7 @@ class VoiceOrderDialog(QDialog):
 
     def _on_failed(self, reason: str) -> None:
         self.status_label.setText("⚠ " + reason)
+        self._say(reason)                 # 화면을 못 보는 손님도 다시 말해야 함을 알 수 있게
 
     def _reset_mic_button(self) -> None:
         self.mic_btn.setEnabled(True)
@@ -253,6 +270,57 @@ class VoiceOrderDialog(QDialog):
         self.input.setText(examples[next_idx])
         preview = examples[next_idx][:28] + ("…" if len(examples[next_idx]) > 28 else "")
         self.status_label.setText("👆 " + preview)
+
+    # ─────────────────────────────────────
+    # 제스처 에임(커서 이동) + 드웰(머무름) 클릭
+    # ─────────────────────────────────────
+    def receive_aim(self, nx: float, ny: float) -> None:
+        """메인 창에서 넘어온 에임 좌표로 창 안 커서를 옮기고 드웰을 진행합니다."""
+        self.cursor.move_norm(self.width(), self.height(), nx, ny)
+        self._update_dwell(nx, ny)
+
+    def _update_dwell(self, nx: float, ny: float) -> None:
+        """커서가 한 버튼 위에 DWELL_SELECT_MS 동안 머물면 그 버튼을 자동으로 누릅니다."""
+        if not config.DWELL_ENABLED:
+            self._reset_dwell()
+            return
+        target = self._button_under_cursor(nx, ny)
+        if target is None:
+            self._reset_dwell()
+            return
+        now = time.time() * 1000
+        moved = ((nx - self._dwell_x) ** 2 + (ny - self._dwell_y) ** 2) ** 0.5
+        # 대상이 바뀌었거나 커서가 많이 움직이면 타이머를 새로 시작
+        if target is not self._dwell_target or moved > config.DWELL_MOVE_TOLERANCE:
+            self._dwell_target = target
+            self._dwell_start_ms = now
+            self._dwell_x, self._dwell_y = nx, ny
+            self.cursor.set_progress(0.0)
+            return
+        elapsed = now - self._dwell_start_ms
+        self.cursor.set_progress(elapsed / config.DWELL_SELECT_MS)
+        if elapsed >= config.DWELL_SELECT_MS:
+            if now - self._last_dwell_ms < config.GRAB_COOLDOWN_MS:
+                return
+            self._last_dwell_ms = now
+            self._reset_dwell()
+            if target.isEnabled():
+                target.click()          # 실제 버튼 클릭(마이크/예시/취소/주문 분석)
+
+    def _reset_dwell(self) -> None:
+        self._dwell_target = None
+        self.cursor.set_progress(0.0)
+
+    def _button_under_cursor(self, nx: float, ny: float) -> QPushButton | None:
+        """커서(정규화 좌표) 아래에 있는, 눌러지는 버튼을 찾습니다."""
+        px = int(nx * self.width())
+        py = int(ny * self.height())
+        w = self.childAt(px, py)
+        while w is not None:
+            if isinstance(w, QPushButton) and w.isEnabled():
+                return w
+            w = w.parentWidget()
+        return None
 
     def closeEvent(self, event) -> None:
         # 창을 닫을 때 마이크 스레드를 안전하게 정리합니다.

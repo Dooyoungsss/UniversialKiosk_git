@@ -116,30 +116,3 @@ class Cart:
              "qty": l.qty, "is_set": l.is_set, "price": l.line_total()}
             for l in self.lines
         ]
-
-    def snapshot_favorite(self) -> dict:
-        """단골 '즐겨찾는 주문' 저장용 스냅샷."""
-        return {
-            "lines": [
-                {"item_id": l.item.item_id, "qty": l.qty,
-                 "is_set": l.is_set, "drink_size": l.drink_size,
-                 "drink_id": l.drink_id, "side_id": l.side_id}
-                for l in self.lines
-            ]
-        }
-
-    @staticmethod
-    def from_favorite(fav: dict) -> "Cart":
-        """단골 즐겨찾기 데이터를 장바구니로 복원(원클릭 재주문)."""
-        cart = Cart()
-        if not fav:
-            return cart
-        for ln in fav.get("lines", []):
-            item = menu_data.get_item(ln.get("item_id", ""))
-            if item:
-                cart.add(item, qty=ln.get("qty", 1),
-                         is_set=ln.get("is_set", False),
-                         drink_size=ln.get("drink_size", "M"),
-                         drink_id=ln.get("drink_id"),
-                         side_id=ln.get("side_id"))
-        return cart

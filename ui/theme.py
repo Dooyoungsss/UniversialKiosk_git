@@ -4,8 +4,8 @@ ui/theme.py — 화면 테마(색·글자크기) (계획서 2.1 가변 레이아
 사용자 속성에 따라 4가지 모드로 화면이 '지능적으로 변신'합니다.
   · standard      : 일반(기본)
   · silver        : 실버 모드 — 글자/그림 1.5배, 단순한 구성(고령자)
-  · child         : 어린이 모드 — 큰 버튼, 밝은 색, 쉬운 말
-  · high_contrast : 고대비 모드 — 검정 배경+노랑 글씨(저시력자)
+  · child         : 어린이 모드 — 글자 1.3배, 밝은 색, 큰 카드(2열)
+  · high_contrast : 고대비 모드 — 검정 배경+노랑·흰 글씨, 글자 1.35배(저시력자)
 
 이벤트 기반 상태 머신(계획서 3장)에서 모드가 바뀌면
 get_stylesheet() 로 만든 새 스타일을 화면 전체에 입힙니다.
@@ -130,6 +130,11 @@ def get_stylesheet(theme: Theme) -> str:
         background-color: transparent;
         border: 2px solid {theme.border};
         color: {theme.sub_text};
+    }}
+    QPushButton#Ghost:checked {{
+        background-color: {theme.primary};
+        color: {theme.primary_text};
+        border: 2px solid {theme.primary};
     }}
     QPushButton#Danger {{
         background-color: transparent;

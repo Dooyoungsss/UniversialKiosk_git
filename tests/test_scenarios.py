@@ -5,12 +5,12 @@ tests/test_scenarios.py — 사용자 시나리오(User Case) 완전탐색 E2E �
 처음부터 끝까지(End-to-End) 재현하여 검증합니다. test_full.py 가 모듈 단위
 검증이라면, 이 파일은 '사용자 여정' 단위 검증입니다.
 
-시나리오 그룹
-  UC-A  터치 주문            UC-F  익명 단골 인식
-  UC-B  음성 주문(NLU)       UC-G  세션/상태 머신
-  UC-C  손동작 제어          UC-H  판매 데이터
-  UC-D  접근성 모드          UC-I  가격 정확성(회귀)
-  UC-E  다국어               UC-J  강건성/예외
+시나리오 그룹 (5대 핵심 기능 + 기본 주문 흐름)
+  UC-A  터치 주문            UC-G  세션/상태 머신
+  UC-B  음성 주문(NLU·소리)  UC-H  판매 데이터
+  UC-C  손동작 제어          UC-I  가격 정확성(회귀)
+  UC-D  연령 자동 화면       UC-J  강건성/예외
+  UC-E  다국어               UC-K  고대비·눈이 불편한 손님 안내
 
 실행:
     python tests/test_scenarios.py
@@ -38,7 +38,6 @@ _db_mod.KioskDatabase.__init__.__defaults__ = (":memory:",)
 from core import menu_data, vision as vision_mod
 from core.order import Cart
 from core.database import KioskDatabase
-from core.regulars import RegularManager
 from core.i18n import TEXTS
 
 
@@ -263,6 +262,34 @@ def test_UC_B7_voice_hanwoo_not_one():
         w.close()
 
 
+def test_UC_B8_voice_result_read_aloud():
+    # 눈이 불편한 손님: 음성 주문 결과(담은 메뉴·합계)를 소리로 들을 수 있어야 함
+    w, (WEL, MENU, DONE) = _win()
+    said = []
+    try:
+        w.speaker.say = said.append
+        w.tr.set_lang("ko"); w._go_menu()
+        w._process_order_text("더블 치즈버거 두개랑 콜라 주세요")
+        assert said and "더블 치즈버거 2개" in said[-1] and "콜라 1개" in said[-1]
+        assert f"{w.cart.total():,}" in said[-1]      # 합계 금액도 읽어 줌
+    finally:
+        w.close()
+
+
+def test_UC_B9_voice_order_and_checkout_in_one_sentence():
+    # 화면을 보지 않고도 한 문장으로 주문과 결제를 끝낼 수 있어야 함
+    from PyQt6.QtTest import QTest
+    w, (WEL, MENU, DONE) = _win()
+    try:
+        w.tr.set_lang("ko"); w._go_menu()
+        w._process_order_text("불고기버거 세트 하나 주시고 결제할게요")
+        assert w.cart.item_count() == 1
+        QTest.qWait(700)                              # 결제는 0.4초 뒤 실행
+        assert w.stack.currentIndex() == DONE
+    finally:
+        w.close()
+
+
 # ══════════════════════════════════════════════
 # UC-C  손동작 제어
 # ══════════════════════════════════════════════
@@ -282,7 +309,8 @@ def test_UC_C2_point_then_fist_adds_pointed_item():
         w._gesture_enabled = True
         w._busy = False
         w._last_gesture_action_ms = 0.0
-        w._on_gesture("point", nx, ny)             # 메뉴를 가리킴(커서 이동)
+        for _ in range(60):                        # 에임 커서는 프레임당 CURSOR_MAX_STEP 만 이동 → 목표까지 여러 프레임
+            w._on_gesture("point", nx, ny)         # 메뉴를 가리킴(커서 이동)
         w._on_gesture("fist", 0.99, 0.99)          # 주먹: 좌표 무시, 가리킨 위치 사용
         ids = [l.item.item_id for l in w.cart.lines]
         assert card.item.item_id in ids            # 가리킨 그 메뉴가 담김
@@ -359,7 +387,8 @@ def test_UC_C8_fist_does_not_jump_cursor():
         card = w.menu_grid.itemAt(1).widget()      # 두 번째 카드
         nx, ny = _norm_center(w, card)
         w._gesture_enabled = True; w._busy = False; w._last_gesture_action_ms = 0.0
-        w._on_gesture("point", nx, ny)
+        for _ in range(60):                        # 에임 커서가 목표 카드까지 이동(프레임당 이동 제한)
+            w._on_gesture("point", nx, ny)
         saved = (w._cursor_nx, w._cursor_ny)
         w._on_gesture("fist_hold", 0.1, 0.1)       # 쥐는 중: 커서 유지
         assert (w._cursor_nx, w._cursor_ny) == saved
@@ -390,6 +419,58 @@ def test_UC_C10_thumb_out_fist_does_not_checkout():
         w._gesture_enabled = True; w._busy = False; w._last_gesture_action_ms = 0.0
         w._on_gesture("sign_hold", 0.5, 0.5)       # 유지 중(미확정) → 무시
         assert w.stack.currentIndex() == MENU      # 결제 화면으로 넘어가지 않음
+    finally:
+        w.close()
+
+
+def test_UC_C11_thumbs_up_never_checks_out():
+    # 엄지척(엄지 인식은 흔들리기 쉬움)으로는 절대 결제되지 않아야 함(오결제 방지)
+    w, (WEL, MENU, DONE) = _win()
+    try:
+        w._go_menu()
+        w._add_to_cart(menu_data.get_item("burger_bulgogi"))
+        w._gesture_enabled = True; w._busy = False; w._last_gesture_action_ms = 0.0
+        w._on_gesture("sign_yes", 0.5, 0.5)        # 확정된 엄지척
+        assert w.stack.currentIndex() == MENU      # 결제로 넘어가지 않음
+        assert w._busy is False
+    finally:
+        w.close()
+
+
+def test_UC_C12_welcome_dwell_starts_order():
+    # 환영 화면에서도 '주문 시작' 버튼 위에 손을 멈추면(드웰) 주문이 시작됨
+    w, (WEL, MENU, DONE) = _win()
+    try:
+        w.resize(1280, 800); w.show(); _app().processEvents()
+        assert w.stack.currentIndex() == WEL
+        nx, ny = _norm_center(w, w.start_btn)
+        w._gesture_enabled = True; w._busy = False
+        for _ in range(60):                        # 커서를 버튼 위로(프레임당 이동 제한)
+            w._on_gesture("open_palm", nx, ny)
+        assert w._dwell_target == ("start", None)
+        w._dwell_start_ms -= config.DWELL_SELECT_MS + 10   # 머무름 시간 경과
+        w._last_gesture_action_ms = 0.0
+        w._on_gesture("open_palm", nx, ny)
+        assert w.stack.currentIndex() == MENU
+    finally:
+        w.close()
+
+
+def test_UC_C13_welcome_pinch_only_on_button():
+    # 환영 화면: 커서가 '주문 시작' 위일 때만 집기로 시작(지나가는 손짓은 무시 → 접근성 안내 보호)
+    w, (WEL, MENU, DONE) = _win()
+    try:
+        w.resize(1280, 800); w.show(); _app().processEvents()
+        w._gesture_enabled = True; w._busy = False; w._last_gesture_action_ms = 0.0
+        w._on_gesture("fist", 0.5, 0.5)            # 커서 없이 집기 → 무시
+        w._on_gesture("sign_yes", 0.5, 0.5)
+        assert w.stack.currentIndex() == WEL
+        nx, ny = _norm_center(w, w.start_btn)
+        for _ in range(60):                        # 커서를 '주문 시작' 버튼 위로
+            w._on_gesture("open_palm", nx, ny)
+        w._last_gesture_action_ms = 0.0
+        w._on_gesture("fist", nx, ny)              # 버튼을 가리키고 집기 → 시작
+        assert w.stack.currentIndex() == MENU
     finally:
         w.close()
 
@@ -455,89 +536,60 @@ def test_UC_E2_text_key_parity():
     assert ko == en == zh                          # 모든 문구 키가 세 언어에 존재
 
 
-# ══════════════════════════════════════════════
-# UC-F  익명 단골 인식
-# ══════════════════════════════════════════════
-def test_UC_F1_register_recognize_welcome():
-    db = KioskDatabase()
-    mgr = RegularManager(db)
-    rng = np.random.default_rng(3)
-    emb = rng.random(72)
-    fav = Cart(); fav.add(menu_data.get_item("burger_bulgogi"))
-    mgr.register("단골1", emb, fav.snapshot_favorite())
-    mgr.reset_tracking()
-    result = None
-    for _ in range(config.FACE_MATCH_STABLE_FRAMES):
-        result = mgr.recognize(emb)                # 같은 얼굴 연속 → 확정
-    assert result is not None and result["nickname"] == "단골1"
-    db.close()
-
-
-def test_UC_F1b_recognize_announces_only_once():
-    # 같은 단골이 카메라에 계속 잡혀도 환영은 '한 번'만(대화상자 중복 스태킹 방지)
-    db = KioskDatabase()
-    mgr = RegularManager(db)
-    emb = np.random.default_rng(11).random(72)
-    fav = Cart(); fav.add(menu_data.get_item("burger_bulgogi"))
-    mgr.register("단골X", emb, fav.snapshot_favorite())
-    mgr.reset_tracking()
-    hits = sum(mgr.recognize(emb) is not None
-               for _ in range(config.FACE_MATCH_STABLE_FRAMES + 30))
-    assert hits == 1                               # 60프레임 들어와도 단 1회만 확정
-    mgr.reset_tracking()                           # 손님이 떠났다 다시 오면
-    again = None
-    for _ in range(config.FACE_MATCH_STABLE_FRAMES):
-        again = mgr.recognize(emb)
-    assert again is not None                       # 다시 인식 가능
-    db.close()
-
-
-
-def test_UC_F2_use_favorite_one_click():
+def test_UC_E3_voice_chinese_auto_switch_and_qty():
+    # 중국어로 말하면 화면이 중국어로 바뀌고, 앞에 오는 수량("两个"=2)도 정확해야 함
     w, (WEL, MENU, DONE) = _win()
     try:
-        fav = Cart()
-        fav.add(menu_data.get_item("burger_double_cheese"), is_set=True, drink_size="L")
-        emb = np.random.default_rng(7).random(72)
-        w.last_embedding = emb
-        rid = w.regulars.register("VIP1", emb, fav.snapshot_favorite())
-        reg = next(r for r in w.regulars._regulars if r["id"] == rid)
-        # 환영 대화상자 없이 즐겨찾기 복원 로직만 직접 검증
-        restored = Cart.from_favorite(reg["favorite"])
-        assert restored.item_count() == fav.item_count()
-        assert restored.total() == fav.total()
+        w.tr.set_lang("ko"); w._go_menu()
+        w._process_order_text("两个双层芝士汉堡和薯条")
+        assert w.tr.lang == "zh"
+        by = {l.item.item_id: l for l in w.cart.lines}
+        assert by["burger_double_cheese"].qty == 2 and "side_fries" in by
     finally:
         w.close()
 
 
-def test_UC_F3_registration_offer_no_duplicate():
-    # 결제 재진입(중첩 루프 모사)에도 등록 제안이 한 번만 열려야 함
+# ══════════════════════════════════════════════
+# UC-K  고대비 · 눈이 불편한 손님 안내(음성)
+# ══════════════════════════════════════════════
+def test_UC_K1_header_contrast_toggle_restores_previous():
     w, (WEL, MENU, DONE) = _win()
     try:
-        w._go_menu()
-        w._add_to_cart(menu_data.get_item("burger_bulgogi"))
-        w.last_embedding = np.random.default_rng(1).random(72)
-        w.active_regular = None
-        calls = {"n": 0}
-        def fake_offer():
-            calls["n"] += 1
-            w._checkout()                          # 재진입 시도
-        w._offer_regular_registration = fake_offer
-        w._checkout()
-        assert calls["n"] == 1
+        w._manual_set_mode(config.MODE_CHILD)
+        w.contrast_btn.click()                     # 헤더 고대비 켜기
+        assert w.mode == config.MODE_HIGH_CONTRAST
+        w.contrast_btn.click()                     # 끄기 → 직전 화면 복귀
+        assert w.mode == config.MODE_CHILD
     finally:
         w.close()
 
 
-def test_UC_F4_unique_nickname():
-    db = KioskDatabase()
-    mgr = RegularManager(db)
-    n1 = mgr.suggest_nickname("단골")
-    mgr.register(n1, np.random.default_rng(2).random(72),
-                 Cart().snapshot_favorite())
-    n2 = mgr.suggest_nickname("단골")
-    assert n1 != n2                                # 중복되지 않는 새 별명
-    db.close()
+def test_UC_K2_low_vision_yes_turns_on_contrast_and_voice():
+    # 접근성 안내에 '네' → 고대비 화면 + 음성 주문(마이크 자동), 연령 자동 전환이 덮어쓰지 않음
+    w, (WEL, MENU, DONE) = _win()
+    opened = []
+    try:
+        w._open_voice_order = lambda auto_listen=False: opened.append(auto_listen)
+        w._start_voice_assist()
+        assert w.mode == config.MODE_HIGH_CONTRAST
+        assert opened == [True]
+        w._last_auto_switch_ms = 0.0
+        for _ in range(config.AGE_VOTE_WINDOW):
+            w._on_age_group("adult")
+        assert w.mode == config.MODE_HIGH_CONTRAST  # 고대비 유지
+    finally:
+        w.close()
+
+
+def test_UC_K3_low_vision_answers_understood():
+    # '잘 안 보여요' 같은 자연스러운 대답도 '네'로, '잘 보여요'는 '아니요'로 알아들어야 함
+    from ui.main_window import KioskMainWindow as K
+    assert K._is_affirmative("네, 잘 안 보여요")
+    assert K._is_affirmative("화면이 안보여요")
+    assert K._is_affirmative("I can't see well")
+    assert K._is_affirmative("看不清")
+    assert not K._is_affirmative("아니요, 잘 보여요")
+    assert K._is_negative("아니요, 잘 보여요")
 
 
 # ══════════════════════════════════════════════
