@@ -617,7 +617,7 @@ def test_gui_fist_adds_item_under_cursor():
     from ui.widgets import MenuCard
     w, (WEL, MENU, DONE) = _make_window()
     try:
-        w.resize(1280, 800)
+        w.resize(1080, 1920)
         w.show()
         app = _get_app()
         app.processEvents()
@@ -708,6 +708,67 @@ def test_gui_voice_result_is_spoken():
         said.clear()
         w._process_order_text("오늘 날씨가 좋네요")
         assert said == [TEXTS["ko"]["not_understood"]]
+    finally:
+        w.close()
+
+
+def test_gui_portrait_fits_standbyme():
+    # LG 스탠바이미 세로 화면(1080×1920): 모든 모드 × 언어에서 창이 화면보다 커지지 않고,
+    # 버튼·목록이 충분히 크며 접근성 버튼 글자가 잘리지 않아야 함(큰 글씨 모드 폭 넘침 회귀 방지)
+    from ui.widgets import ChoiceDialog
+    from ui.voice_dialog import VoiceOrderDialog
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+
+    def settle():
+        for _ in range(3):
+            app.processEvents()
+
+    try:
+        assert (config.WINDOW_WIDTH, config.WINDOW_HEIGHT) == (1080, 1920)
+        w.resize(1080, 1920)
+        w.show()
+        for lang in ("ko", "en", "zh"):
+            for mode in (config.MODE_STANDARD, config.MODE_SILVER,
+                         config.MODE_CHILD, config.MODE_HIGH_CONTRAST):
+                tag = f"{lang}/{mode}"
+                w.tr.set_lang(lang)
+                w.mode = mode
+                w._apply_theme()
+                settle()
+                assert (w.width(), w.height()) == (1080, 1920), (tag, w.size())  # 첫 화면
+                assert w.start_btn.width() >= 900 and w.start_btn.height() >= 140, tag
+                assert w.welcome_voice_btn.height() >= 100, tag
+                # 접근성 버튼 4개는 화면 폭을 똑같이 나눠 씀(글자 크기 고정 → 실제 글꼴 최대 약 200px)
+                for b in (w.lang_btn, w.contrast_btn, w.tts_btn, w.gesture_btn):
+                    assert b.width() >= 240 and b.height() >= 80, (tag, b.size())
+
+                w._go_menu()
+                w._add_to_cart(menu_data.get_item("burger_double_cheese"), is_set=True)
+                w._add_to_cart(menu_data.get_item("drink_cola"))
+                settle()
+                assert (w.width(), w.height()) == (1080, 1920), (tag, w.size())  # 메뉴 화면
+                assert w.menu_scroll.viewport().height() >= 450, tag
+                assert w.cart_scroll.viewport().height() >= 140, tag
+                assert w.checkout_btn.height() >= 90, tag
+
+                w._checkout()
+                settle()
+                assert (w.width(), w.height()) == (1080, 1920), (tag, w.size())  # 완료 화면
+                w._reset_session()
+
+                # 접근성 안내창·음성 주문 창도 세로 화면 폭 안에 들어와야 함
+                t = TEXTS[lang]
+                box = ChoiceDialog(t["a11y_ask_title"], t["a11y_ask"], t["a11y_yes"],
+                                   t["a11y_no"], style=w.styleSheet(), parent=w)
+                assert box.width() <= 1080 and box.height() <= 1920, (tag, box.size())
+                box.deleteLater()
+                dlg = VoiceOrderDialog(lang, t["voice_hint"], t["listening"], w,
+                                       theme=theme_mod.get_theme(mode))
+                dlg.setStyleSheet(w.styleSheet())
+                dlg.adjustSize()
+                assert dlg.width() <= 1080 and dlg.height() <= 1920, (tag, dlg.size())
+                dlg.deleteLater()
     finally:
         w.close()
 

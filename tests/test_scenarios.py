@@ -100,7 +100,7 @@ def _win():
 def _shown_menu_window():
     """실제 위젯 크기를 갖도록 띄운 뒤 메뉴 화면으로 보낸 윈도우."""
     w, screens = _win()
-    w.resize(1280, 800)
+    w.resize(1080, 1920)
     w.show()
     _app().processEvents()
     w._go_menu()
@@ -441,7 +441,7 @@ def test_UC_C12_welcome_dwell_starts_order():
     # 환영 화면에서도 '주문 시작' 버튼 위에 손을 멈추면(드웰) 주문이 시작됨
     w, (WEL, MENU, DONE) = _win()
     try:
-        w.resize(1280, 800); w.show(); _app().processEvents()
+        w.resize(1080, 1920); w.show(); _app().processEvents()
         assert w.stack.currentIndex() == WEL
         nx, ny = _norm_center(w, w.start_btn)
         w._gesture_enabled = True; w._busy = False
@@ -460,7 +460,7 @@ def test_UC_C13_welcome_pinch_only_on_button():
     # 환영 화면: 커서가 '주문 시작' 위일 때만 집기로 시작(지나가는 손짓은 무시 → 접근성 안내 보호)
     w, (WEL, MENU, DONE) = _win()
     try:
-        w.resize(1280, 800); w.show(); _app().processEvents()
+        w.resize(1080, 1920); w.show(); _app().processEvents()
         w._gesture_enabled = True; w._busy = False; w._last_gesture_action_ms = 0.0
         w._on_gesture("fist", 0.5, 0.5)            # 커서 없이 집기 → 무시
         w._on_gesture("sign_yes", 0.5, 0.5)

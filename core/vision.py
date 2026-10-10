@@ -40,7 +40,7 @@ from config import (
     SWIPE_MIN_DISTANCE, SWIPE_COOLDOWN_MS, FIST_HOLD_FRAMES, AGE_INFER_EVERY,
     FINGER_EXTEND_RATIO, FINGER_FOLD_RATIO, FINGER_ANGLE_EXTEND_DEG,
     FINGER_ANGLE_FOLD_DEG, GESTURE_VOTE_WINDOW, GESTURE_VOTE_MIN, PINCH_RATIO,
-    ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF, AIM_USE_PALM,
+    ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF, AIM_USE_PALM, AIM_ZONE,
 )
 from core.mathutils import OneEuroFilter, cosine_similarity, equalize_lighting
 from core.age_model import AgeEstimator
@@ -382,7 +382,11 @@ if _QT:
                     if hand_res.multi_hand_landmarks:
                         g, (gx, gy) = self.gesture_recognizer.classify(
                             hand_res.multi_hand_landmarks[0])
-                        self.gesture.emit(g, float(gx), float(gy))
+                        # 세로로 긴 화면: 카메라의 조준 영역(AIM_ZONE)을 화면 전체로 넓혀 보냄
+                        x0, y0, x1, y1 = AIM_ZONE
+                        sx = min(1.0, max(0.0, (gx - x0) / (x1 - x0)))
+                        sy = min(1.0, max(0.0, (gy - y0) / (y1 - y0)))
+                        self.gesture.emit(g, float(sx), float(sy))
                         # 미리보기에 손 위치 표시
                         cv2.circle(frame, (int(gx * frame.shape[1]),
                                            int(gy * frame.shape[0])), 12, (0, 255, 0), -1)

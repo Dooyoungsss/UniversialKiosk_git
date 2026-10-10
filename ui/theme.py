@@ -75,6 +75,9 @@ def get_stylesheet(theme: Theme) -> str:
         font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
         font-size: {theme.pt(16)}pt;
     }}
+    QLabel {{
+        background-color: transparent;     /* 카드·머리글 위 글자 뒤에 배경색 띠가 생기지 않게 */
+    }}
     QLabel#Title {{
         font-size: {theme.pt(34)}pt;
         font-weight: 800;
@@ -162,5 +165,89 @@ def get_stylesheet(theme: Theme) -> str:
     QFrame#StatusBar {{
         background-color: {theme.surface};
         border-top: 2px solid {theme.border};
+    }}
+    /* ── 세로 27인치(1080×1920) 화면 전용 ── */
+    QLabel#Hero {{
+        font-size: {theme.pt(44)}pt;
+        font-weight: 900;
+        color: {theme.text};
+    }}
+    QLabel#Section {{
+        font-size: {theme.pt(22)}pt;
+        font-weight: 800;
+        color: {theme.text};
+    }}
+    QLabel#DialogText {{
+        font-size: {theme.pt(22)}pt;
+        font-weight: 700;
+        color: {theme.text};
+    }}
+    QLabel#OrderNo {{
+        font-size: {theme.pt(72)}pt;
+        font-weight: 900;
+        color: {theme.primary};
+    }}
+    QLabel#Hint {{
+        font-size: {theme.pt(15)}pt;
+        color: {theme.sub_text};
+    }}
+    QLabel#TileEmoji {{
+        font-size: {theme.pt(60)}pt;
+    }}
+    QLabel#TileName {{
+        font-size: {theme.pt(20)}pt;
+        font-weight: 800;
+    }}
+    QPushButton#Secondary {{
+        background-color: {theme.surface};
+        color: {theme.primary};
+        border: 3px solid {theme.primary};
+        font-weight: 800;
+    }}
+    QPushButton#Secondary:hover {{
+        background-color: {theme.bg};
+    }}
+    /* 큰 버튼(첫 화면 시작·음성, 메뉴 탭, 결제 등): big 속성이 켜진 버튼 */
+    QPushButton[big="true"] {{
+        font-size: {theme.pt(24)}pt;
+        font-weight: 800;
+    }}
+    QPushButton#Primary[big="true"] {{
+        font-size: {theme.pt(28)}pt;
+    }}
+    QFrame#Header {{
+        background-color: {theme.surface};
+        border-bottom: 2px solid {theme.border};
+    }}
+    QFrame#Header QWidget {{
+        background-color: transparent;
+    }}
+    QFrame#AccessBar {{
+        background-color: {theme.surface};
+        border-top: 2px solid {theme.border};
+    }}
+    /* 머리글·접근성 버튼은 모드와 상관없이 같은 크기 → 큰 글씨 모드에서도 화면 폭(1080)을 넘지 않음 */
+    QLabel#Logo {{
+        font-size: 26pt;
+        font-weight: 800;
+        color: {theme.text};
+    }}
+    QLabel#Status {{
+        font-size: 13pt;
+        color: {theme.sub_text};
+    }}
+    QPushButton#Access {{
+        background-color: {theme.bg};
+        color: {theme.text};
+        border: 2px solid {theme.border};
+        border-radius: 18px;
+        padding: 6px 4px;
+        font-size: 18pt;
+        font-weight: 700;
+    }}
+    QPushButton#Access:checked {{
+        background-color: {theme.primary};
+        color: {theme.primary_text};
+        border: 2px solid {theme.primary};
     }}
     """

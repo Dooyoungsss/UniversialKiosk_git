@@ -13,10 +13,47 @@ main.py — 유니버셜 키오스크 실행 진입점
 """
 from __future__ import annotations
 
+import os
 import sys
 
 
+def _monitor_sizes() -> list[tuple[int, int]]:
+    """연결된 모니터들의 (가로, 세로) 픽셀 크기를 돌려줍니다(Windows, 실패하면 빈 목록)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        sizes: list[tuple[int, int]] = []
+        proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                                       ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+
+        def _collect(_monitor, _dc, rect, _data):
+            r = rect.contents
+            sizes.append((r.right - r.left, r.bottom - r.top))
+            return True
+
+        ctypes.windll.user32.EnumDisplayMonitors(None, None, proc_type(_collect), 0)
+        return sizes
+    except Exception:
+        return []
+
+
+def _configure_display(design_height: int) -> None:
+    """디자인(세로 1080×1920)을 스탠바이미 화면 픽셀에 정확히 맞춥니다. QApplication 생성 전에 호출."""
+    # Windows 화면 배율(125% 등)과 상관없이 디자인 1px = 화면 1px, 글자는 96DPI 기준
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+    os.environ.setdefault("QT_FONT_DPI", "96")
+    if "QT_SCALE_FACTOR" in os.environ:
+        return
+    sizes = _monitor_sizes()
+    if sizes and not any(h > w for w, h in sizes):
+        # 세로 모니터가 없으면(개발용 노트북) 같은 세로 화면을 축소해 미리보기로 띄움
+        tallest = max(h for _, h in sizes)
+        os.environ["QT_SCALE_FACTOR"] = f"{min(1.0, (tallest - 140) / design_height):.3f}"
+
+
 def main() -> int:
+    import config
+    _configure_display(config.WINDOW_HEIGHT)
     try:
         from PyQt6.QtWidgets import QApplication
     except Exception as e:
@@ -24,16 +61,21 @@ def main() -> int:
         print("오류:", e)
         return 1
 
-    import config
     from ui.main_window import KioskMainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName(config.APP_TITLE)
 
     window = KioskMainWindow()
-    if config.FULLSCREEN:
+    portrait = next((s for s in app.screens()
+                     if s.geometry().height() > s.geometry().width()), None)
+    if config.FULLSCREEN and portrait is not None:
+        window.move(portrait.geometry().topLeft())
         window.showFullScreen()
     else:
+        # 개발용 미리보기: 주 화면 위쪽 가운데에 세로 창을 통째로 보이게 둠
+        avail = app.primaryScreen().availableGeometry()
+        window.move(avail.left() + max(0, (avail.width() - window.width()) // 2), avail.top())
         window.show()
 
     return app.exec()

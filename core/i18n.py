@@ -74,6 +74,10 @@ TEXTS = {
         "point_then_fist": "👉 메뉴 위에 커서를 올린 뒤 집거나(핀치) 잠시 멈춰 주세요",
         # ── 고대비(저시력자) ──
         "contrast_tooltip": "눈이 불편한 분을 위한 고대비 화면 켜기/끄기",
+        # ── 세로 화면(아래쪽 접근성 버튼 · 첫 화면 안내) ──
+        "sound_btn": "소리 안내",
+        "gesture_btn": "손동작",
+        "welcome_hint": "✋ 카메라에 손바닥을 보여 주면 손 커서가 나타나요. 버튼 위에서 잠시 멈추면 눌려요.",
         # ── 모드 음성 안내(TTS) ──
         "mode_silver_say": "큰 글씨 실버 모드로 바꿨어요",
         "mode_child_say": "어린이 모드로 바꿨어요",
@@ -116,7 +120,7 @@ TEXTS = {
         # ── 시작 접근성 안내(시각장애인·저시력자) ──
         "a11y_ask_title": "음성 도움 안내",
         "a11y_ask": ("눈이 불편하시거나 화면 글씨가 잘 안 보이시나요?\n\n"
-                     "'네'라고 말씀하시거나 아래 '네' 버튼을 누르시면\n"
+                     "'네'라고 말씀하시거나 아래 '네' 버튼을 누르시면 "
                      "화면을 선명하게(고대비) 바꾸고 음성으로 주문을 도와드립니다."),
         "a11y_ask_tts": ("안녕하세요. 눈이 불편하시거나 화면이 잘 안 보이시나요? "
                          "그렇다면 네 라고 말씀하시거나 화면의 네 버튼을 눌러 주세요. "
@@ -184,6 +188,10 @@ TEXTS = {
         "point_then_fist": "👉 Move the cursor onto a menu, then pinch or hold still",
         # ── 고대비(저시력자) ──
         "contrast_tooltip": "Toggle high-contrast screen for low vision",
+        # ── Portrait screen (bottom accessibility bar · welcome hint) ──
+        "sound_btn": "Sound",
+        "gesture_btn": "Gestures",
+        "welcome_hint": "✋ Show your palm to the camera to get a hand cursor. Hold it on a button to press it.",
         # ── 모드 음성 안내(TTS) ──
         "mode_silver_say": "Switched to large-text silver mode",
         "mode_child_say": "Switched to kids mode",
@@ -226,7 +234,7 @@ TEXTS = {
         # ── 시작 접근성 안내(시각장애인·저시력자) ──
         "a11y_ask_title": "Voice Assistance",
         "a11y_ask": ("Is it hard for you to see the screen?\n\n"
-                     "Say 'yes' or press the 'Yes' button below\n"
+                     "Say 'yes' or press the 'Yes' button below "
                      "to switch to high contrast and order by voice."),
         "a11y_ask_tts": ("Hello. Is it hard for you to see the screen? "
                          "If so, please say yes, or press the Yes button on the screen. "
@@ -294,6 +302,10 @@ TEXTS = {
         "point_then_fist": "👉 将光标移到菜单上，然后捏合或停留片刻",
         # ── 고대비(저시력자) ──
         "contrast_tooltip": "为视力不佳的用户开启/关闭高对比画面",
+        # ── 竖屏（底部无障碍按钮 · 欢迎提示）──
+        "sound_btn": "语音提示",
+        "gesture_btn": "手势",
+        "welcome_hint": "✋ 向摄像头展示手掌即可出现手势光标，在按钮上停留片刻即可按下。",
         # ── 모드 음성 안내(TTS) ──
         "mode_silver_say": "已切换到大字银发模式",
         "mode_child_say": "已切换到儿童模式",
@@ -337,7 +349,7 @@ TEXTS = {
         # ── 시작 접근성 안내(시각장애인·저시력자) ──
         "a11y_ask_title": "语音辅助",
         "a11y_ask": ("您看不清屏幕吗？\n\n"
-                     "说“是”或按下方的“是”按钮，\n"
+                     "说“是”或按下方的“是”按钮，"
                      "即可切换为高对比画面并通过语音点单。"),
         "a11y_ask_tts": ("您好。您看不清屏幕吗？"
                          "如果是，请说是，或按屏幕上的是按钮。"

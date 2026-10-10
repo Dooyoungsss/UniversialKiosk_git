@@ -113,14 +113,17 @@ class VoiceOrderDialog(QDialog):
         sub_color = theme.sub_text if theme else "#5C6B82"
         accent = theme.primary if theme else "#2D6CDF"
         self.setWindowTitle("🎤 " + self.tr.t("voice_title"))
-        self.setMinimumWidth(640)
+        # 세로 27인치 화면(폭 1080)에 맞춘 넓은 창. 큰 글씨 모드에서도 화면 밖으로 넘지 않게 상한을 둠
+        self.setMinimumWidth(900)
+        self.setMaximumWidth(1040)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 24, 24, 24)
-        lay.setSpacing(14)
+        lay.setContentsMargins(32, 28, 32, 28)
+        lay.setSpacing(16)
 
         title = QLabel("🎤 " + self.tr.t("voice_natural"))
-        title.setStyleSheet("font-size:22pt; font-weight:800;")
+        title.setStyleSheet("font-size:26pt; font-weight:800;")
+        title.setWordWrap(True)
         lay.addWidget(title)
 
         sub = QLabel(hint)
@@ -130,17 +133,19 @@ class VoiceOrderDialog(QDialog):
 
         self.input = QLineEdit()
         self.input.setPlaceholderText(listening_text)
-        self.input.setStyleSheet("font-size:18pt; padding:12px; border-radius:12px;"
+        self.input.setMinimumHeight(76)
+        self.input.setStyleSheet("font-size:20pt; padding:12px; border-radius:12px;"
                                  f"border:2px solid {accent};")
         self.input.returnPressed.connect(self.accept)
         lay.addWidget(self.input)
 
         # 마이크 상태 안내 줄
         self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color:{accent}; font-weight:700;")
         lay.addWidget(self.status_label)
 
-        # 예시 문장 버튼들(시연 편의)
+        # 예시 문장 버튼들(시연 편의) — 긴 문장이 창 폭을 넘지 않도록 글자 크기 고정
         ex_label = QLabel(self.tr.t("examples_label"))
         ex_label.setStyleSheet(f"color:{sub_color}; font-weight:700;")
         lay.addWidget(ex_label)
@@ -150,12 +155,14 @@ class VoiceOrderDialog(QDialog):
             b = QPushButton(ex)
             b.setObjectName("Ghost")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet("text-align:left; padding:10px;")
+            b.setMinimumHeight(64)
+            b.setStyleSheet("text-align:left; padding:10px 16px; font-size:18pt;")
             b.clicked.connect(lambda _, t=ex: self.input.setText(t))
             lay.addWidget(b)
 
         # 실제 마이크 버튼 + 확인/취소
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
         self.mic_btn = QPushButton("🎙 " + self.tr.t("speak"))
         self.mic_btn.setObjectName("Ghost")
         self.mic_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -170,6 +177,8 @@ class VoiceOrderDialog(QDialog):
         ok = QPushButton(self.tr.t("analyze"))
         ok.setObjectName("Primary")
         ok.clicked.connect(self.accept)
+        for b in (self.mic_btn, cancel, ok):
+            b.setMinimumHeight(84)
         btn_row.addWidget(self.mic_btn)
         btn_row.addStretch()
         btn_row.addWidget(cancel)
@@ -178,8 +187,9 @@ class VoiceOrderDialog(QDialog):
 
         # 손동작 힌트(카메라 제스처로 다이얼로그를 조작할 수 있음을 안내)
         self.gesture_hint_label = QLabel(self.tr.t("voice_gesture_hint"))
-        self.gesture_hint_label.setStyleSheet(f"color:{sub_color}; font-size:9pt;")
+        self.gesture_hint_label.setStyleSheet(f"color:{sub_color}; font-size:14pt;")
         self.gesture_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gesture_hint_label.setWordWrap(True)
         lay.addWidget(self.gesture_hint_label)
 
         # ── 제스처 에임 커서 + 드웰(머무름) 클릭 ─────────────────

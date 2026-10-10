@@ -6,13 +6,14 @@ ui/widgets.py — 재사용 UI 부품들
   · CartItemRow    : 장바구니의 한 줄(수량 +/- 포함)
   · GestureCursor  : 손동작으로 움직이는 동그란 커서
   · Toast          : 잠깐 떴다 사라지는 알림 말풍선
+  · ChoiceDialog   : '네/아니요'를 묻는 큰 안내창(접근성 안내)
 """
 from __future__ import annotations
 
 from PyQt6.QtCore import (Qt, QTimer, pyqtSignal, QPropertyAnimation, QPoint,
                           QRect, QSize)
 from PyQt6.QtGui import QPainter, QPen, QColor
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QPushButton,
+from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLayout, QPushButton,
                              QSizePolicy, QVBoxLayout, QWidget,
                              QGraphicsOpacityEffect)
 
@@ -130,10 +131,13 @@ class MenuCard(QPushButton):
         self.setObjectName("MenuCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumSize(190, 210)
+        # 버튼 기본값(세로 Fixed)은 카드를 210px 에 고정해 큰 글씨 모드에서 그림이 잘림.
+        # Preferred 로 두면 내용 높이 이상을 보장하면서 남는 세로 공간을 카드가 채움(세로 화면).
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 14, 10, 14)
-        lay.setSpacing(6)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(4)
 
         emoji = QLabel(item.emoji)
         emoji.setObjectName("Emoji")
@@ -148,18 +152,22 @@ class MenuCard(QPushButton):
         price.setObjectName("Price")
         price.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        lay.addStretch()
         lay.addWidget(emoji)
         lay.addWidget(name)
-        lay.addWidget(price)
+        # 가격과 BEST 표시를 한 줄에 → 카드가 낮아져 실버 모드에서도 3줄이 스크롤 없이 보임
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        bottom.addStretch()
+        bottom.addWidget(price)
         if item.is_best:
             badge = QLabel("BEST")
             badge.setObjectName("Badge")
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            wrap = QHBoxLayout()
-            wrap.addStretch()
-            wrap.addWidget(badge)
-            wrap.addStretch()
-            lay.addLayout(wrap)
+            bottom.addWidget(badge)
+        bottom.addStretch()
+        lay.addLayout(bottom)
+        lay.addStretch()
 
 
 class CartItemRow(QFrame):
@@ -185,39 +193,36 @@ class CartItemRow(QFrame):
         minus = QPushButton("−")
         plus = QPushButton("＋")
         for b in (minus, plus):
-            b.setFixedSize(44, 44)
+            b.setFixedSize(60, 60)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         qty = QLabel(str(line.qty))
         qty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        qty.setFixedWidth(34)
+        qty.setMinimumWidth(44)
         qty.setStyleSheet("font-weight:800;")
 
         remove = QPushButton("✕")
         remove.setObjectName("Danger")
-        remove.setFixedSize(40, 40)
+        remove.setFixedSize(60, 60)
         remove.setCursor(Qt.CursorShape.PointingHandCursor)
 
         minus.clicked.connect(lambda: self.qty_changed.emit(self.index, -1))
         plus.clicked.connect(lambda: self.qty_changed.emit(self.index, +1))
         remove.clicked.connect(lambda: self.removed.emit(self.index))
 
-        # 두 줄 배치(위: 메뉴 이름, 아래: 가격·수량·삭제) — 글자가 커지는 모드에서도 버튼이 잘리지 않게
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 5, 10, 5)
-        outer.setSpacing(4)
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        top.addWidget(emoji)
-        top.addWidget(name, 1)
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
-        bottom.addWidget(price, 1)
-        bottom.addWidget(minus)
-        bottom.addWidget(qty)
-        bottom.addWidget(plus)
-        bottom.addWidget(remove)
-        outer.addLayout(top)
-        outer.addLayout(bottom)
+        # 세로 화면은 장바구니 폭이 넓으므로 한 줄(그림·이름 | 가격 · − 수량 + · 삭제)로 배치.
+        # 손가락으로 누르기 쉽게 버튼은 60px(27인치 화면 기준 약 1.9cm)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 6, 12, 6)
+        row.setSpacing(10)
+        row.addWidget(emoji)
+        row.addWidget(name, 1)
+        row.addWidget(price)
+        row.addSpacing(6)
+        row.addWidget(minus)
+        row.addWidget(qty)
+        row.addWidget(plus)
+        row.addSpacing(6)
+        row.addWidget(remove)
 
 
 class GestureCursor(QLabel):
@@ -225,12 +230,12 @@ class GestureCursor(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(54, 54)
+        self.setFixedSize(72, 72)             # 27인치 세로 화면에서 멀리서도 보이는 크기
         self.setText("👆")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet(
-            "font-size:30pt; background-color: rgba(45,108,223,0.18);"
-            "border:3px solid #2D6CDF; border-radius:27px;")
+            "font-size:38pt; background-color: rgba(45,108,223,0.18);"
+            "border:4px solid #2D6CDF; border-radius:36px;")
         # 커서는 클릭/히트테스트 대상이 아님 → 아래 메뉴 카드를 childAt 으로 찾을 수 있게
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._progress = 0.0                 # 드웰 진행률(0~1) — 진행 링으로 표시
@@ -278,7 +283,9 @@ class Toast(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet(
             "background-color: rgba(27,35,48,0.92); color:white;"
-            "border-radius:22px; padding:14px 28px; font-size:18pt; font-weight:700;")
+            "border-radius:26px; padding:18px 34px; font-size:22pt; font-weight:700;")
+        # 알림이 떠 있는 동안에도 아래 장바구니 버튼을 바로 누를 수 있게 터치를 통과시킴
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.hide()
         self._effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._effect)
@@ -300,3 +307,54 @@ class Toast(QLabel):
         self._anim.setEndValue(0.0)
         self._anim.finished.connect(self.hide)
         self._anim.start()
+
+
+class ChoiceDialog(QDialog):
+    """'네/아니요'를 묻는 큰 안내창.
+
+    세로 27인치 화면에서 멀리서도 읽히도록 글씨를 키우고, 손가락·손 커서(드웰)로
+    누르기 쉽게 두 버튼을 화면 폭 가득 위아래로 둡니다.
+    '네' → accept(), '아니요'·Esc → reject().
+    """
+
+    WIDTH = 900
+
+    def __init__(self, title: str, text: str, yes_text: str, no_text: str,
+                 style: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(44, 40, 44, 40)
+        lay.setSpacing(24)
+
+        head = QLabel(title)
+        head.setObjectName("Section")
+        head.setWordWrap(True)
+        body = QLabel(text)
+        body.setObjectName("DialogText")
+        body.setWordWrap(True)
+
+        self.yes_btn = QPushButton(yes_text)
+        self.yes_btn.setObjectName("Primary")
+        self.yes_btn.setMinimumHeight(120)
+        self.no_btn = QPushButton(no_text)
+        self.no_btn.setMinimumHeight(100)
+        for b in (self.yes_btn, self.no_btn):
+            b.setProperty("big", True)          # 두 답 모두 큰 글씨(멀리서도 읽히게)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # 창 폭 고정
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.yes_btn.clicked.connect(self.accept)
+        self.no_btn.clicked.connect(self.reject)
+        self.no_btn.setDefault(True)          # Enter = '아니요'(실수로 바뀌지 않게)
+
+        lay.addWidget(head)
+        lay.addWidget(body)
+        lay.addSpacing(8)
+        lay.addWidget(self.yes_btn)
+        lay.addWidget(self.no_btn)
+
+        # 테마(글자 크기)를 먼저 입힌 뒤, 그 글씨로 줄바꿈된 높이에 딱 맞춰 크기를 정함
+        if style:
+            self.setStyleSheet(style)
+        self.ensurePolished()
+        self.setFixedSize(self.WIDTH, lay.totalHeightForWidth(self.WIDTH))
