@@ -200,7 +200,9 @@ def _parse_with_rules(text: str) -> NLUResult:
                               "清空", "删除", "全部删", "取消"]):
         result.intents.append(OrderIntent(action="clear"))
         return result
-    if any(k in low for k in ["결제", "주문 완료", "계산", "checkout", "pay", "그게 다", "끝",
+    # '결재'는 맞춤법은 다르지만 음성 인식이 '결제'를 '결재'로 받아 적는 경우가 많아 함께 인정
+    if any(k in low for k in ["결제", "결재", "주문 완료", "계산", "checkout", "check out", "pay",
+                              "that's all", "that is all", "그게 다", "끝",
                               "结账", "结算", "付款", "买单"]):
         result.intents.append(OrderIntent(action="checkout"))
 

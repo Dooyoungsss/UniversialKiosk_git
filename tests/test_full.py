@@ -407,6 +407,17 @@ def test_gesture_fist():
     assert name == "fist"
 
 
+def test_gesture_pinch():
+    # 엄지 끝을 검지 끝에 맞댄 '집게 손'을 잠깐 유지하면 pinch(선택)로 확정
+    gr = vision_mod.GestureRecognizer()
+    hand = hand_with(False, True, False, False, False)
+    tip = hand.landmark[8]
+    hand.landmark[4].x, hand.landmark[4].y = tip.x + 0.01, tip.y + 0.01
+    names = [gr.classify(hand)[0] for _ in range(config.FIST_HOLD_FRAMES)]
+    assert names[0] == "pinch_hold"                         # 첫 프레임엔 확정 금지
+    assert names[-1] == "pinch"
+
+
 def test_gesture_open_palm():
     gr = vision_mod.GestureRecognizer()
     name, _ = gr.classify(hand_with(True, True, True, True, True))
@@ -423,6 +434,36 @@ def test_gesture_signs():
     assert gr2.classify(hand_with(False, True, True, False, False))[0] == "sign_two"
     gr3 = vision_mod.GestureRecognizer()
     assert gr3.classify(hand_with(False, True, False, False, False))[0] == "point"
+
+
+def test_gesture_swipe_vertical():
+    # 손바닥을 위/아래로 빠르게 휘두르면 swipe_up / swipe_down (목록 넘기기)
+    def real_hand_y(py, scale=0.10):
+        px = 0.5
+        lms = [_LM(px, py) for _ in range(21)]
+        lms[9] = _LM(px, py - scale)
+        for mcp, pip, tip, ox in [(5, 6, 8, -0.02), (9, 10, 12, 0.0),
+                                  (13, 14, 16, 0.02), (17, 18, 20, 0.035)]:
+            lms[mcp] = _LM(px + ox, py - scale)
+            lms[pip] = _LM(px + ox, py - scale * 1.6)
+            lms[tip] = _LM(px + ox, py - scale * 2.4)
+        lms[3] = _LM(px - 0.06, py - scale * 0.6)
+        lms[4] = _LM(px - 0.10, py - scale)
+        return _Hand(lms)
+
+    clock = [1000.0]
+    orig_time = vision_mod.time.time
+    vision_mod.time.time = lambda: (clock.__setitem__(0, clock[0] + 0.05) or clock[0])
+    try:
+        gr = vision_mod.GestureRecognizer()
+        up = [gr.classify(real_hand_y(p))[0] for p in (0.9, 0.7, 0.5, 0.3)]
+        assert "swipe_up" in up, up
+        gr2 = vision_mod.GestureRecognizer()
+        down = [gr2.classify(real_hand_y(p))[0] for p in (0.3, 0.5, 0.7, 0.9)]
+        assert "swipe_down" in down, down
+        assert not any(n in ("swipe_left", "swipe_right") for n in up + down)
+    finally:
+        vision_mod.time.time = orig_time
 
 
 def test_gesture_swipe():
@@ -511,7 +552,7 @@ def test_gui_cart_and_checkout():
         w._go_menu()
         w._add_to_cart(menu_data.get_item("burger_bulgogi"))
         assert w.cart.item_count() == 1
-        w._handle_gesture_action("fist")                      # 베스트 버거 담기
+        w._handle_gesture_action("pinch")                     # 집게 손 → 베스트 버거 담기
         assert w.cart.item_count() == 2
         w._checkout()
         assert w.stack.currentIndex() == DONE                 # 결제 완료 화면
@@ -632,7 +673,7 @@ def test_gui_fist_adds_item_under_cursor():
         w.cursor.show()
         assert w._menu_item_under_cursor() is target_card.item   # 좌표→카드 매핑
         before = w.cart.item_count()
-        w._handle_gesture_action("fist")
+        w._handle_gesture_action("pinch")
         ids = [l.item.item_id for l in w.cart.lines]
         assert target_card.item.item_id in ids            # 가리킨 제품이 담김
         assert w.cart.item_count() == before + 1
@@ -648,7 +689,7 @@ def test_gui_fist_fallback_best_without_cursor():
         w._menu_item_under_cursor = lambda: None
         w.cursor.hide()
         before = w.cart.item_count()
-        w._handle_gesture_action("fist")
+        w._handle_gesture_action("pinch")
         items = menu_data.items_in_category(w.current_category)
         best = next((m for m in items if m.is_best), items[0])
         ids = [l.item.item_id for l in w.cart.lines]
@@ -663,11 +704,328 @@ def test_gui_fist_hint_when_cursor_off_card():
     w, (WEL, MENU, DONE) = _make_window()
     try:
         w._go_menu()
-        w._menu_item_under_cursor = lambda: None
+        w._clickable_under_cursor = lambda: None          # 커서가 빈 곳(버튼 아님)을 가리킴
         w.cursor.show()
         before = w.cart.item_count()
-        w._handle_gesture_action("fist")
+        w._handle_gesture_action("pinch")
         assert w.cart.item_count() == before              # 변화 없음(안내만)
+    finally:
+        w.close()
+
+
+def test_gui_only_pinch_selects():
+    # 선택은 집게 손만: 주먹·엄지척으로는 담기지 않아야 함(기본 설정)
+    w, (WEL, MENU, DONE) = _make_window()
+    try:
+        w._go_menu()
+        w._menu_item_under_cursor = lambda: None
+        w.cursor.hide()
+        before = w.cart.item_count()
+        w._handle_gesture_action("fist")
+        w._handle_gesture_action("sign_yes")
+        assert w.cart.item_count() == before
+        w._handle_gesture_action("pinch")
+        assert w.cart.item_count() == before + 1
+    finally:
+        w.close()
+
+
+def test_gui_pinch_clicks_any_button():
+    # 집게 손은 커서 아래의 어떤 버튼이든 누름: 카테고리 탭, 장바구니 +, 결제하기
+    # (손동작 켜기/끄기 버튼은 손동작으로 끌 수 없게 제외)
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    try:
+        w.resize(1080, 1920)
+        w.show()
+        w._go_menu()
+        for _ in range(5):
+            app.processEvents()
+        central = w.centralWidget()
+
+        def aim_at(widget):
+            c = widget.mapTo(central, widget.rect().center())
+            w._cursor_nx = c.x() / central.width()
+            w._cursor_ny = c.y() / central.height()
+            w.cursor.show()
+
+        # 1) 카테고리 탭
+        aim_at(w.cat_buttons[menu_data.CATEGORY_SIDE])
+        w._handle_gesture_action("pinch")
+        assert w.current_category == menu_data.CATEGORY_SIDE
+        # 2) 장바구니 + 버튼
+        w._add_to_cart(menu_data.get_item("burger_bulgogi"))
+        for _ in range(5):
+            app.processEvents()
+        plus = next(b for b in w.cart_host.findChildren(type(w.voice_btn))
+                    if b.isVisible() and b.text().strip() in ("+", "＋"))
+        aim_at(plus)
+        before = w.cart.item_count()
+        w._handle_gesture_action("pinch")
+        assert w.cart.item_count() == before + 1
+        # 3) 손동작 켜기/끄기 버튼은 집게로 눌리지 않음
+        aim_at(w.gesture_btn)
+        w._handle_gesture_action("pinch")
+        assert w._gesture_enabled is True
+        # 4) 결제하기 버튼
+        aim_at(w.checkout_btn)
+        w._handle_gesture_action("pinch")
+        assert w.stack.currentIndex() == DONE
+    finally:
+        w.close()
+
+
+def test_gui_pinch_snaps_to_near_button():
+    # 집게로 버튼을 살짝 빗나가도 가까운 버튼을 누름(장바구니 +).
+    # 단, 결제하기는 실수 결제 방지를 위해 정확히 가리켰을 때만 눌림.
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    try:
+        w.resize(1080, 1920)
+        w.show()
+        w._go_menu()
+        w._add_to_cart(menu_data.get_item("burger_bulgogi"))
+        for _ in range(5):
+            app.processEvents()
+        central = w.centralWidget()
+
+        def aim_near(widget, off_x, off_y):
+            c = widget.mapTo(central, widget.rect().center())
+            w._cursor_nx = (c.x() + off_x) / central.width()
+            w._cursor_ny = (c.y() + off_y) / central.height()
+            w.cursor.show()
+
+        plus = next(b for b in w.cart_host.findChildren(type(w.voice_btn))
+                    if b.isVisible() and b.text().strip() in ("+", "＋"))
+        aim_near(plus, 0, plus.height() // 2 + 25)        # 버튼 아래로 25px 빗나감
+        assert w._button_at(central, int(w._cursor_nx * central.width()),
+                            int(w._cursor_ny * central.height())) is not plus
+        before = w.cart.item_count()
+        w._handle_gesture_action("pinch")
+        assert w.cart.item_count() == before + 1          # 가까운 + 가 눌림
+        aim_near(w.checkout_btn, 0, -(w.checkout_btn.height() // 2 + 20))   # 결제하기 위로 20px
+        w._handle_gesture_action("pinch")
+        assert w.stack.currentIndex() == MENU              # 결제로 넘어가지 않음
+    finally:
+        w.close()
+
+
+def test_gui_dwell_does_not_repeat():
+    # 드웰(2초 머물기)로 메뉴를 담은 뒤 커서가 그 메뉴 위에 계속 있어도 또 담기지 않아야 함.
+    # 커서가 벗어났다가 돌아오면 다시 담을 수 있음.
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    try:
+        w.resize(1080, 1920)
+        w.show()
+        w._go_menu()
+        for _ in range(5):
+            app.processEvents()
+        central = w.centralWidget()
+        card = w.menu_grid.itemAt(0).widget()
+        c = card.mapTo(central, card.rect().center())
+        nx, ny = c.x() / central.width(), c.y() / central.height()
+        w._cursor_nx, w._cursor_ny = nx, ny
+        w.cursor.show()
+
+        def dwell_cycle(x, y):
+            w._update_dwell(x, y)                              # 머무름 시작
+            w._dwell_start_ms -= config.DWELL_SELECT_MS + 10   # 2초 경과
+            w._last_gesture_action_ms = 0.0
+            w._update_dwell(x, y)
+
+        dwell_cycle(nx, ny)
+        assert w.cart.item_count() == 1
+        for _ in range(3):                                     # 그대로 머물러도 추가로 안 담김
+            dwell_cycle(nx, ny)
+        assert w.cart.item_count() == 1
+        w._cursor_nx, w._cursor_ny = 0.02, 0.02                # 메뉴 밖으로 나감
+        w._update_dwell(0.02, 0.02)
+        w._cursor_nx, w._cursor_ny = nx, ny                    # 다시 돌아와 머무름
+        dwell_cycle(nx, ny)
+        assert w.cart.item_count() == 2
+    finally:
+        w.close()
+
+
+def test_gui_menu_layout_same_in_all_modes():
+    # 화면 모드가 바뀌어도 메뉴 순서와 위치(줄·칸)가 같아야 함
+    w, (WEL, MENU, DONE) = _make_window()
+    try:
+        w._go_menu()
+        layouts = []
+        for mode in (config.MODE_STANDARD, config.MODE_SILVER,
+                     config.MODE_CHILD, config.MODE_HIGH_CONTRAST):
+            w._set_mode(mode)
+            cells = []
+            for i in range(w.menu_grid.count()):
+                r, col, _, _ = w.menu_grid.getItemPosition(i)
+                cells.append((w.menu_grid.itemAt(i).widget().item.item_id, r, col))
+            layouts.append(sorted(cells))
+        assert all(lay == layouts[0] for lay in layouts), layouts
+    finally:
+        w.close()
+
+
+def test_gui_voice_text_defers_checkout():
+    # 음성 주문 창에서 '…주시고 결제할게요'라고 하면 담고, 결제는 창을 닫은 뒤에 하도록 알려 줌
+    w, (WEL, MENU, DONE) = _make_window()
+    try:
+        w.tr.set_lang("ko")
+        w._go_menu()
+        res = w._voice_text("불고기버거 하나 주시고 결제할게요")
+        assert res["checkout"] is True and res["added"] == 1
+        assert w.stack.currentIndex() == MENU                  # 아직 결제 화면으로 안 넘어감
+        res2 = w._voice_text("결제할게요")                     # 이미 담긴 상태에서 결제만
+        assert res2["checkout"] is True
+        w._clear_cart()
+        res3 = w._voice_text("결제할게요")                     # 빈 장바구니 결제 요청은 거절
+        assert res3["checkout"] is False
+    finally:
+        w.close()
+
+
+def test_voice_dialog_conversation():
+    # 대화식 음성 창: 알아들은 말은 확인 없이 바로 담고, '결제'면 창을 닫고 결제 요청
+    from ui.voice_dialog import VoiceOrderDialog
+    _get_app()
+    calls = []
+
+    def on_text(t):
+        calls.append(t)
+        return {"added": 1, "checkout": "결제" in t, "understood": True,
+                "message": "담았어요", "lang": "ko"}
+
+    d = VoiceOrderDialog("ko", "힌트", "듣는 중", None, speaker=None, auto_listen=False,
+                         on_text=on_text, can_checkout=lambda: True)
+    d.show()
+    d._on_recognized("콜라 하나 주세요")
+    assert calls == ["콜라 하나 주세요"] and d.isVisible()
+    assert d.input.text() == "" and not d.checkout_requested
+    d._on_recognized("결제할게요")
+    assert d.checkout_requested and not d.isVisible()
+
+
+def test_voice_multilang_picks_english():
+    # 세 언어로 동시에 인식해 가장 믿을 만한 결과를 고름(화면이 한국어여도 영어·중국어 말을 알아들음)
+    from ui import voice_dialog as vd
+    assert vd.looks_english_in_hangul("투 치즈버거스 앤 어 라지 콕 플리즈")
+    assert not vd.looks_english_in_hangul("불고기버거 세트 하나 주세요")
+
+    class _Sr:
+        class UnknownValueError(Exception):
+            pass
+
+        class RequestError(Exception):
+            pass
+
+    def fake(answers):
+        class _Rec:
+            def recognize_google(self, audio, language=None, show_all=False):
+                text, conf = answers[language]
+                return {"alternative": [{"transcript": text, "confidence": conf}], "final": True}
+        return _Rec()
+
+    def pick(ui_lang, answers):
+        got = []
+        worker = vd.SpeechWorker(ui_lang)
+        worker.recognized.connect(got.append)
+        worker._recognize_order(_Sr, fake(answers), object())
+        return got[0] if got else None
+
+    # 화면 한국어 + 영어로 말함
+    assert pick("ko", {"ko-KR": ("투 치즈버거스 앤 어 라지 콕 플리즈", 0.62),
+                       "en-US": ("two cheeseburgers and a large coke please", 0.91),
+                       "zh-CN": ("两个", 0.30)}) == "two cheeseburgers and a large coke please"
+    # 화면 한국어 + 중국어로 말함
+    assert pick("ko", {"ko-KR": ("량거 쑤앙청", 0.41),
+                       "en-US": ("liang ge", 0.35),
+                       "zh-CN": ("两个双层芝士汉堡", 0.88)}) == "两个双层芝士汉堡"
+    # 영어로 말했는데 중국어 인식기가 엉터리 'QQQ'를 높은 신뢰도로 돌려줘도 영어를 고름
+    assert pick("ko", {"ko-KR": ("", 0.0),
+                       "en-US": ("hello there", 0.80),
+                       "zh-CN": ("QQQ", 0.95)}) == "hello there"
+    # 화면 한국어 + 한국어로 말함
+    assert pick("ko", {"ko-KR": ("불고기버거 세트 하나 주세요", 0.93),
+                       "en-US": ("bull go", 0.40),
+                       "zh-CN": ("不过", 0.30)}) == "불고기버거 세트 하나 주세요"
+
+
+def test_nlu_gyeoljae_means_checkout():
+    # 음성 인식이 '결제'를 '결재'로 받아 적어도 결제로 알아들어야 함
+    from core.nlu import parse_order
+    for t in ("결재 해줘", "이제 결재할게요", "결제 해줘", "That's all", "check out please"):
+        assert any(i.action == "checkout" for i in parse_order(t).intents), t
+
+
+def test_gui_cart_scrollbar_hidden_but_scrolls():
+    # 장바구니 스크롤바는 숨기되, 손동작 스와이프로는 넘어가야 함
+    from PyQt6.QtCore import Qt
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    try:
+        w.resize(1080, 1920)
+        w.show()
+        w._go_menu()
+        for item in menu_data.MENU[:8]:
+            w._add_to_cart(item)
+        for _ in range(5):
+            app.processEvents()
+        assert w.cart_scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        bar = w.cart_scroll.verticalScrollBar()
+        assert bar.maximum() > 0
+        central = w.centralWidget()
+        c = w.cart_scroll.mapTo(central, w.cart_scroll.rect().center())
+        w._cursor_nx, w._cursor_ny = c.x() / central.width(), c.y() / central.height()
+        w.cursor.show()
+        w._handle_gesture_action("swipe_up")
+        w._scroll_anim.setCurrentTime(w._scroll_anim.duration())
+        assert bar.value() > 0
+    finally:
+        w.close()
+
+
+def test_aim_map_elastic():
+    # 탄력 조준: 손을 카메라 아래쪽에서 처음 들어도 화면 맨 위·맨 아래에 모두 닿아야 하고,
+    # 손이 한참 안 보였다가 다시 들면 그곳을 기준으로 다시 맞춤
+    vt = vision_mod.VisionThread()
+    clock = [1000.0]
+    orig = vision_mod.time.time
+    vision_mod.time.time = lambda: clock[0]
+    try:
+        sx, sy = vt._aim_map("open_palm", 0.5, 0.85)          # 카메라 아래쪽에서 처음 듦
+        assert abs(sx - 0.5) < 1e-9 and 0.5 < sy < 1.0
+        assert vt._aim_map("open_palm", 0.5, 0.95)[1] > 0.99   # 카메라 아래 끝 → 화면 맨 아래
+        assert vt._aim_map("open_palm", 0.5, 0.30)[1] < 0.01   # 손을 들면 화면 맨 위(범위가 따라옴)
+        assert vt._aim_map("open_palm", 0.5, 0.95)[1] > 0.99   # 다시 내리면 다시 맨 아래
+        assert vt._aim_map("open_palm", 0.97, 0.6)[0] > 0.99   # 오른쪽 끝
+        clock[0] += config.AIM_RECENTER_AFTER_S + 1             # 손이 한참 안 보였다가
+        sx, sy = vt._aim_map("open_palm", 0.5, 0.5)             # 다시 들면 그곳이 가운데
+        assert abs(sx - 0.5) < 1e-9 and abs(sy - 0.5) < 1e-9
+    finally:
+        vision_mod.time.time = orig
+
+
+def test_gui_swipe_up_scrolls_menu():
+    # 손바닥 위로 휘두르기 → 메뉴 목록이 아래쪽으로 넘어감, 아래로 → 다시 위로
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    try:
+        w.resize(1080, 1200)
+        w.show()
+        w._go_menu()
+        w._manual_set_mode(config.MODE_SILVER)            # 큰 카드 → 스크롤이 생김
+        for _ in range(5):
+            app.processEvents()
+        bar = w.menu_scroll.verticalScrollBar()
+        assert bar.maximum() > 0
+        w.cursor.hide()
+        w._handle_gesture_action("swipe_up")
+        w._scroll_anim.setCurrentTime(w._scroll_anim.duration())   # 애니메이션 끝으로
+        assert bar.value() > 0
+        w._handle_gesture_action("swipe_down")
+        w._scroll_anim.setCurrentTime(w._scroll_anim.duration())
+        assert bar.value() == 0
     finally:
         w.close()
 

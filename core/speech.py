@@ -22,6 +22,10 @@ class Speaker:
         self._queue: "queue.Queue[str]" = queue.Queue()
         self._engine = None
         self._thread = None
+        # 읽는 중이거나 대기 중인 문장 수(마이크를 켤 시점 판단용). 대기열에서 꺼낸 직후의
+        # 빈틈 없이 세려고 say() 에서 늘리고, 다 읽은 뒤에 줄입니다.
+        self._pending = 0
+        self._pending_lock = threading.Lock()
         if self.enabled:
             self._start()
 
@@ -54,6 +58,7 @@ class Speaker:
             if text is None:                # 종료 신호
                 break
             if not self.enabled:            # 도중에 꺼졌으면 조용히 버립니다
+                self._done_one()
                 continue
             try:
                 voice_id = voices_by_lang.get(self._detect_lang(text))
@@ -63,6 +68,12 @@ class Speaker:
                 engine.runAndWait()
             except Exception:
                 pass
+            finally:
+                self._done_one()
+
+    def _done_one(self) -> None:
+        with self._pending_lock:
+            self._pending = max(0, self._pending - 1)
 
     @staticmethod
     def _map_voices(voices) -> dict:
@@ -94,7 +105,19 @@ class Speaker:
     def say(self, text: str) -> None:
         """문장을 읽도록 대기열에 넣습니다(즉시 반환)."""
         if self.enabled and text:
+            with self._pending_lock:
+                self._pending += 1
             self._queue.put(text)
+
+    def is_speaking(self) -> bool:
+        """읽는 중이거나 읽을 문장이 남아 있으면 True.
+
+        마이크는 이 값이 False 가 된 뒤에 켜야 합니다. 안내 음성이 나오는 동안 켜면
+        키오스크 자신의 목소리를 '주변 소음'으로 재서 손님의 짧은 대답('네')을 놓칩니다.
+        """
+        if not self.enabled:            # TTS 가 없거나 꺼졌으면 기다릴 소리도 없음
+            return False
+        return self._pending > 0
 
     def toggle(self, on: bool) -> None:
         self.enabled = on and self._engine is not None

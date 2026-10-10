@@ -7,7 +7,8 @@ ui/main_window.py — 키오스크 메인 화면 (계획서 3장: 동적 GUI + �
   0) 환영 화면  → 1) 메뉴 화면  → 2) 결제 완료 화면
 
 5대 핵심 기능 연동:
-  ① 제스처       : 손바닥 커서(에임) → 핀치·드웰로 선택, 좌우 스와이프로 카테고리 넘기기
+  ① 제스처       : 손바닥 커서(에임) → 집게 손·드웰로 선택, 좌우 스와이프로 카테고리 넘기기,
+                    위아래 스와이프로 메뉴·장바구니 목록 넘기기
   ② 연령 자동 화면 : 비전 스레드의 연령대 신호 → 다수결·쿨다운 → 어린이·일반·실버 모드
   ③ 음성         : 눈이 불편한 손님 안내 → 음성 주문(STT→NLU) → 담은 결과를 소리로 안내(TTS)
   ④ 다국어       : 한국어·영어·중국어 전환(말한 언어로 화면 자동 전환)
@@ -19,13 +20,14 @@ ui/main_window.py — 키오스크 메인 화면 (계획서 3장: 동적 GUI + �
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QGridLayout,
+from PyQt6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox, QFrame, QGridLayout,
                              QHBoxLayout, QLabel, QMainWindow,
                              QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
                              QVBoxLayout, QWidget, QApplication)
 
+import re
 import time
 from collections import Counter, deque
 
@@ -39,10 +41,17 @@ from core.speech import Speaker
 from core.vision import VisionThread, _QT
 from ui import theme as theme_mod
 from ui.widgets import (MenuCard, CartItemRow, GestureCursor, Toast, FlowLayout,
-                        ChoiceDialog)
-from ui.voice_dialog import VoiceOrderDialog, SpeechWorker, speech_available
+                        ChoiceDialog, enable_swipe_scroll)
+from ui.voice_dialog import VoiceOrderDialog, SpeechWorker, speech_available, run_when_quiet
 
 # 화면(상태) 번호
+# 손동작 이름 묶음
+#  · 선택: 설정(SELECT_GESTURES)에 있는 손동작만 '선택'(담기·버튼 누르기)으로 받습니다(기본: 집게 손).
+#  · 유지 중: 집게·주먹·엄지척을 확정하기 전 '쥐는 중' 신호 → 커서를 움직이지 않고 기다립니다.
+SELECT_GESTURES = frozenset(config.SELECT_GESTURES)
+HOLD_GESTURES = frozenset({"pinch_hold", "fist_hold", "sign_hold"})
+SWIPE_GESTURES = frozenset({"swipe_left", "swipe_right", "swipe_up", "swipe_down"})
+
 SCREEN_WELCOME = 0
 SCREEN_MENU = 1
 SCREEN_DONE = 2
@@ -91,6 +100,15 @@ class KioskMainWindow(QMainWindow):
         self._intro_shown = False             # 현재 손님에게 접근성 안내를 이미 물었는지
         self._had_order = False               # 첫 주문을 마친 뒤로는 접근성 안내를 다시 묻지 않음
         self._intro_worker: SpeechWorker | None = None   # 접근성 안내의 예/아니오 음성 인식
+        self._cursor_trail: deque = deque(maxlen=40)    # 최근 커서 위치 (시각, x, y)
+        self._dwell_lock = None                         # 드웰로 방금 선택한 대상(반복 선택 방지)
+        self._dialog_dwell_lock = None
+        self._last_gesture_name = ""
+        # 얼굴이 CUSTOMER_LEAVE_MS 동안 계속 안 보여야 '손님이 떠났다'고 판단(잠깐 놓친 건 무시)
+        self._leave_timer = QTimer(self)
+        self._leave_timer.setSingleShot(True)
+        self._leave_timer.setInterval(config.CUSTOMER_LEAVE_MS)
+        self._leave_timer.timeout.connect(self._on_customer_left)
 
         self.setWindowTitle(f"{config.APP_TITLE} — {config.TEAM_NAME}")
         self.resize(config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
@@ -115,6 +133,10 @@ class KioskMainWindow(QMainWindow):
             return
         if not self.isVisible() or self._busy:
             return
+        # 안내창·음성 주문 창 등 다른 창이 이미 떠 있으면 새 안내창을 겹쳐 만들지 않습니다.
+        if (self._active_dialog is not None or self._active_voice_dialog is not None
+                or QApplication.activeModalWidget() is not None):
+            return
         if self.stack.currentIndex() != SCREEN_WELCOME or not self.cart.is_empty():
             return
         self._ask_accessibility_intro()
@@ -124,7 +146,7 @@ class KioskMainWindow(QMainWindow):
 
         · 음성(TTS)으로 질문을 읽어 줍니다.
         · 마이크로 '네/아니요'를 듣고(STT), '네'면 예 버튼을 자동으로 누릅니다.
-        · 마이크가 없어도 화면의 예/아니요 버튼(또는 주먹 제스처)으로 응답할 수 있습니다.
+        · 마이크가 없어도 화면의 예/아니요 버튼(또는 집게 손 제스처)으로 응답할 수 있습니다.
         """
         self.speaker.say(self.tr.t("a11y_ask_tts"))
 
@@ -132,28 +154,25 @@ class KioskMainWindow(QMainWindow):
         box = ChoiceDialog("🦯 " + self.tr.t("a11y_ask_title"), self.tr.t("a11y_ask"),
                            self.tr.t("a11y_yes"), self.tr.t("a11y_no"),
                            style=self.styleSheet(), parent=self)
-        yes_btn, no_btn = box.yes_btn, box.no_btn
         self._active_dialog = box            # 제스처 라우팅 대상으로 등록
 
-        # 마이크가 있으면 '네/아니요'를 음성으로도 받습니다(질문 낭독 후 시작).
+        # 마이크가 있으면 '네/아니요'를 음성으로도 받습니다.
+        # 질문 음성이 '다 끝난 뒤'에 마이크를 켜고, 못 알아들으면 몇 번 더 듣습니다.
         if speech_available():
-            worker = SpeechWorker(self.tr.lang, self)
-            worker.recognized.connect(
-                lambda t: self._on_intro_reply(t, box, yes_btn, no_btn))
-            self._intro_worker = worker
-
-            def _kick() -> None:
-                if self._active_dialog is box and not worker.isRunning():
-                    worker.start()
-            QTimer.singleShot(config.VOICE_AUTO_LISTEN_DELAY_MS, _kick)
+            run_when_quiet(self.speaker, lambda: self._intro_listen(box, 1),
+                           min_delay_ms=config.VOICE_AUTO_LISTEN_DELAY_MS)
 
         try:
             chose_yes = bool(box.exec())          # '네' → accept(1), '아니요'·Esc → reject(0)
         finally:
             self._active_dialog = None
-            if self._intro_worker is not None and self._intro_worker.isRunning():
-                self._intro_worker.wait(1500)
+            worker = self._intro_worker
             self._intro_worker = None
+            try:
+                if worker is not None and worker.isRunning():
+                    worker.wait(1500)
+            except RuntimeError:                  # 이미 정리된 스레드
+                pass
 
         if chose_yes:
             self._start_voice_assist()
@@ -167,36 +186,88 @@ class KioskMainWindow(QMainWindow):
         self._set_mode(config.MODE_HIGH_CONTRAST)
         self._open_voice_order(auto_listen=True)
 
-    def _on_intro_reply(self, text: str, box, yes_btn, no_btn) -> None:
+    def _intro_listen(self, box, attempt: int) -> None:
+        """안내창이 열려 있는 동안 '네/아니요'를 한 번 듣습니다(짧은 대답 전용 인식)."""
+        if self._active_dialog is not box:        # 이미 버튼으로 답했거나 창이 닫힘
+            return
+        worker = SpeechWorker(self.tr.lang, self, short_answer=True)
+        worker.recognized.connect(lambda t: self._on_intro_reply(t, box, attempt))
+        worker.failed.connect(lambda _reason: self._intro_retry(box, attempt))
+        worker.finished.connect(worker.deleteLater)
+        self._intro_worker = worker
+        worker.start()
+
+    def _intro_retry(self, box, attempt: int) -> None:
+        """못 들었거나 못 알아들었으면 다시 듣고, 여러 번 실패하면 버튼 사용을 소리로 안내."""
+        if self._active_dialog is not box:
+            return
+        if attempt >= config.INTRO_LISTEN_ATTEMPTS:
+            self.speaker.say(self.tr.t("a11y_not_heard_tts"))
+            return
+        QTimer.singleShot(300, lambda: self._intro_listen(box, attempt + 1))
+
+    def _on_intro_reply(self, text: str, box, attempt: int = 1) -> None:
         """접근성 안내에서 마이크로 들은 답을 예/아니요 버튼 클릭으로 연결."""
         if self._active_dialog is not box:      # 이미 닫혔으면 무시
             return
-        if self._is_affirmative(text):
-            yes_btn.click()
-        elif self._is_negative(text):
-            no_btn.click()
+        answer = self._intro_answer(text)
+        if answer is True:
+            box.yes_btn.click()
+        elif answer is False:
+            box.no_btn.click()
+        else:
+            self._intro_retry(box, attempt)     # 다른 말이 들렸으면 다시 듣기
+
+    @classmethod
+    def _intro_answer(cls, text: str):
+        """들은 말이 '네'면 True, '아니요'면 False, 판단할 수 없으면 None.
+
+        '괜찮네요'처럼 두 쪽이 섞이면 '안 보여요' 같은 분명한 도움 요청이 있을 때만 '네'로 봅니다.
+        """
+        yes, no = cls._is_affirmative(text), cls._is_negative(text)
+        if yes and not no:
+            return True
+        if no and not yes:
+            return False
+        if yes and no:
+            t = (text or "").lower()
+            strong = ("안 보", "안보", "잘 안", "시각장애", "도와", "看不清",
+                      "can't see", "cannot see")
+            return any(w in t for w in strong)
+        return None
+
+    # 영어는 'no'가 'cannot' 안에도 들어 있으므로 낱말 단위로만 비교합니다.
+    _YES_KO_ZH = ("맞아", "맞어", "맞습니다", "네", "내", "넵", "넹", "예", "응", "그래", "당연",
+                  "시각장애", "장애", "도와", "그렇", "좋아", "안 보", "안보", "잘 안",
+                  "是", "对", "好", "嗯", "需要", "看不清")
+    _YES_EN = ("yes", "yeah", "yep", "yup", "correct", "sure", "okay", "ok", "please")
+    _YES_EN_PHRASE = ("can't see", "cannot see", "can not see")
+    _NO_KO_ZH = ("아니", "아뇨", "괜찮", "됐어", "됐습니다", "不", "沒", "没", "不用")
+    _NO_EN = ("no", "nope", "nah")
 
     @staticmethod
-    def _is_affirmative(text: str) -> bool:
+    def _en_words(t: str) -> set[str]:
+        return set(re.findall(r"[a-z']+", t))
+
+    @classmethod
+    def _is_affirmative(cls, text: str) -> bool:
         """'네'에 해당하는 대답인지(한/영/중) 판별."""
         t = (text or "").strip().lower()
         if not t:
             return False
-        words = ("맞아", "맞어", "맞습니다", "네", "예", "응", "그래", "당연",
-                 "시각장애", "장애", "도와", "그렇", "좋아", "안 보", "안보",
-                 "yes", "yeah", "yep", "yup", "correct", "sure", "okay", "ok",
-                 "can't see", "cannot see",
-                 "是", "对", "好", "嗯", "需要", "看不清")
-        return any(w in t for w in words)
+        if any(w in t for w in cls._YES_KO_ZH + cls._YES_EN_PHRASE):
+            return True
+        return bool(cls._en_words(t) & set(cls._YES_EN))
 
-    @staticmethod
-    def _is_negative(text: str) -> bool:
+    @classmethod
+    def _is_negative(cls, text: str) -> bool:
         """'아니요'에 해당하는 대답인지(한/영/중) 판별."""
         t = (text or "").strip().lower()
         if not t:
             return False
-        words = ("아니", "아뇨", "괜찮", "됐", "no", "nope", "不", "沒", "没", "不用")
-        return any(w in t for w in words)
+        if any(w in t for w in cls._NO_KO_ZH):
+            return True
+        return bool(cls._en_words(t) & set(cls._NO_EN))
 
     # ══════════════════════════════════════════
     # UI 뼈대 구성
@@ -362,8 +433,8 @@ class KioskMainWindow(QMainWindow):
         self.demo_gesture_buttons: dict[str, QPushButton] = {}
         self._demo_gesture_meta = {"swipe_left": ("👈", "prev"),
                                    "swipe_right": ("👉", "next"),
-                                   "fist": ("✊", "demo_grab")}
-        for g in ("swipe_left", "swipe_right", "fist"):
+                                   "select": ("🤏", "demo_grab")}
+        for g in ("swipe_left", "swipe_right", "select"):
             b = QPushButton()
             b.setObjectName("Ghost")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -523,6 +594,7 @@ class KioskMainWindow(QMainWindow):
         self.menu_grid = QGridLayout(self.menu_host)
         self.menu_grid.setSpacing(14)
         self.menu_scroll.setWidget(self.menu_host)
+        enable_swipe_scroll(self.menu_scroll)        # 손가락으로 밀어서 메뉴 넘기기
 
         # 메뉴 영역을 넓게(위), 장바구니는 아래 패널로
         outer.addWidget(self.menu_scroll, 3)
@@ -557,6 +629,10 @@ class KioskMainWindow(QMainWindow):
         self.cart_list.setSpacing(8)
         self.cart_list.addStretch()
         self.cart_scroll.setWidget(self.cart_host)
+        # 스크롤바는 숨김(손가락으로 밀거나 손동작 스와이프로 넘김)
+        self.cart_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.cart_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        enable_swipe_scroll(self.cart_scroll)        # 손가락으로 밀어서 장바구니 넘기기
         lay.addWidget(self.cart_scroll, 1)
 
         self.clear_btn = QPushButton()
@@ -721,15 +797,10 @@ class KioskMainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         won = self.tr.t("won")
-        # 실버 모드: 베스트셀러를 앞쪽에 노출, 한 줄에 2개(큰 카드)
+        # 모든 화면 모드에서 메뉴의 순서와 줄 수(2열)를 똑같이 둡니다.
+        # 모드가 바뀌어도 메뉴 위치가 그대로라 손님이 헷갈리지 않고, 글자·그림 크기만 달라집니다.
         items = menu_data.items_in_category(self.current_category)
-        if self.mode == config.MODE_SILVER:
-            items = sorted(items, key=lambda m: (not m.is_best, m.name_ko))
-            cols = 2
-        elif self.mode == config.MODE_CHILD:
-            cols = 2
-        else:
-            cols = 3          # 세로 화면 폭(1080)에 카드 3장
+        cols = 2
         for i, item in enumerate(items):
             card = MenuCard(item, self.tr.lang, won)
             card.clicked.connect(lambda _, it=item: self._add_to_cart(it))
@@ -806,23 +877,36 @@ class KioskMainWindow(QMainWindow):
     # ══════════════════════════════════════════
     def _open_voice_order(self, auto_listen: bool = False) -> None:
         was_welcome = self.stack.currentIndex() == SCREEN_WELCOME
+        # 대화식 음성 주문: 알아들은 말은 창 안에서 바로 장바구니에 담고 계속 듣습니다.
+        # '결제'라고 말하거나 창의 결제하기 버튼을 누르면 창을 닫고 바로 결제합니다.
         dlg = VoiceOrderDialog(self.tr.lang, self.tr.t("voice_hint"),
                                self.tr.t("listening"), self,
                                speaker=self.speaker, auto_listen=auto_listen,
-                               theme=theme_mod.get_theme(self.mode))
+                               theme=theme_mod.get_theme(self.mode),
+                               on_text=self._voice_text,
+                               can_checkout=lambda: not self.cart.is_empty())
         dlg.setStyleSheet(self.styleSheet())
         self._active_voice_dialog = dlg          # 제스처 라우팅을 위해 참조 저장
-        if dlg.exec():
-            text = dlg.get_text()
-            if text:
-                self._process_order_text(text)
-                # 환영 화면에서 열었고 메뉴가 담겼으면 메뉴 화면으로 자동 이동
-                if was_welcome and not self.cart.is_empty():
-                    self._go_menu()
+        dlg.exec()
         self._active_voice_dialog = None         # 창 닫힘 → 참조 해제
+        # 환영 화면에서 열었고 메뉴가 담겼으면 메뉴 화면으로 자동 이동
+        if was_welcome and not self.cart.is_empty():
+            self._go_menu()
+        if dlg.checkout_requested and not self.cart.is_empty():
+            self._checkout()
         self._reset_idle()
 
-    def _process_order_text(self, text: str) -> None:
+    def _voice_text(self, text: str) -> dict:
+        """음성 주문 창이 알아들은 문장 하나를 처리합니다(결제는 창이 닫힌 뒤에 진행)."""
+        self._reset_idle()
+        return self._process_order_text(text, defer_checkout=True)
+
+    def _process_order_text(self, text: str, defer_checkout: bool = False) -> dict:
+        """주문 문장을 장바구니에 반영하고 결과를 돌려줍니다.
+
+        defer_checkout=True 면 '결제' 요청을 바로 실행하지 않고 결과의 checkout 으로 알려 줍니다
+        (음성 주문 창을 먼저 닫고 결제하기 위해).
+        """
         result = parse_order(text)
         # 다국어: 영어로 말하면 UI 전체를 영어로 전환(계획서 2.4)
         if result.detected_language != self.tr.lang:
@@ -830,23 +914,38 @@ class KioskMainWindow(QMainWindow):
             self._apply_theme()
         added = 0
         handled = False        # 결제/비우기 같은 '명령'도 처리한 것으로 인정
+        want_checkout = False
         spoken: list[str] = []  # 담은 메뉴를 소리로 읽어 줄 문구
         for intent in result.intents:
+            if intent.action == "checkout" and defer_checkout:
+                want_checkout = handled = True
+                continue
             added += self._apply_intent(intent, spoken)
             if intent.action in ("clear", "checkout"):
                 handled = True
         self._refresh_cart()
         # 눈이 불편한 손님도 결과를 알 수 있도록 화면 알림과 함께 소리로 읽어 줍니다.
+        message = ""
         if added:
             self._show_toast(f"🎤 {self.tr.t('engine_smart')}: "
                              f"{self.tr.t('voice_added').format(n=added)}")
-            self.speaker.say(self.tr.t("voice_result_tts").format(
-                items=", ".join(spoken), total=f"{self.cart.total():,}"))
+            message = self.tr.t("voice_result_tts").format(
+                items=", ".join(spoken), total=f"{self.cart.total():,}")
+            self.speaker.say(message)
         elif any(i.action == "clear" for i in result.intents):
-            self.speaker.say(self.tr.t("cleared_tts"))
+            message = self.tr.t("cleared_tts")
+            self.speaker.say(message)
         elif not handled:
-            self._show_toast("🤔 " + self.tr.t("not_understood"))
-            self.speaker.say(self.tr.t("not_understood"))
+            message = self.tr.t("not_understood")
+            self._show_toast("🤔 " + message)
+            self.speaker.say(message)
+        if want_checkout and self.cart.is_empty():      # 담은 게 없는데 결제하자고 함
+            want_checkout = False
+            message = self.tr.t("cart_empty")
+            self.speaker.say(message)
+        return {"added": added, "checkout": want_checkout,
+                "understood": bool(added or handled), "message": message,
+                "lang": self.tr.lang}
 
     def _apply_intent(self, intent: OrderIntent, spoken: list[str] | None = None) -> int:
         """NLU 가 만든 의도 1개를 장바구니에 반영. 담은 개수를 반환."""
@@ -941,6 +1040,10 @@ class KioskMainWindow(QMainWindow):
         self._age_votes.append(group)
         if len(self._age_votes) < config.AGE_VOTE_MIN_COUNT:
             return
+        # 접근성 안내창이 '네/아니요'를 듣는 동안에는 화면 전환을 미룹니다.
+        # (전환 안내 음성이 마이크에 섞여 손님의 대답을 못 알아듣는 것을 방지. 투표는 계속 모음)
+        if self._active_dialog is not None:
+            return
 
         # 가장 많이 나온 연령대와 그 표 수를 구합니다.
         winner, count = Counter(self._age_votes).most_common(1)[0]
@@ -963,17 +1066,23 @@ class KioskMainWindow(QMainWindow):
 
     def _on_face_present(self, present: bool) -> None:
         if present:
+            self._leave_timer.stop()          # 같은 손님이 다시 보임 → '떠남' 판정 취소
             # 사람이 실제로 감지됐을 때만, 아직 안 물었고 첫 주문 전이면 접근성 안내를 띄웁니다.
             if (config.ACCESSIBILITY_INTRO_ENABLED
                     and not self._intro_shown and not self._had_order):
                 self._intro_shown = True
                 QTimer.singleShot(900, self._maybe_intro_accessibility)
             return
-        # 손님이 떠나면(얼굴 사라짐) 다음 손님을 준비합니다.
-        if not self._busy:
-            self._age_votes.clear()       # 연령 투표함 초기화
-            if not self._had_order:
-                self._intro_shown = False  # 새 손님에게는 다시 물을 수 있도록 재무장
+        # 얼굴을 잠깐 놓친 것(고개 돌림 등)일 수 있으므로, 한동안 계속 안 보일 때만 떠난 것으로 봅니다.
+        self._leave_timer.start()
+
+    def _on_customer_left(self) -> None:
+        """얼굴이 CUSTOMER_LEAVE_MS 동안 계속 안 보임 → 다음 손님을 준비합니다."""
+        if self._busy or self._active_dialog is not None or self._active_voice_dialog is not None:
+            return                        # 창이 열려 있는 동안은 같은 손님으로 봄
+        self._age_votes.clear()           # 연령 투표함 초기화
+        if not self._had_order:
+            self._intro_shown = False     # 새 손님에게는 다시 물을 수 있도록 재무장
 
     def _on_gesture(self, name: str, x: float, y: float) -> None:
         # 손동작이 꺼져 있으면 모두 무시
@@ -982,6 +1091,13 @@ class KioskMainWindow(QMainWindow):
             self._reset_dwell()
             self.gesture_label.setText("✋ " + self.tr.t("gesture_off"))
             return
+        # 커서 위치 기록(집게·스와이프를 시작하기 직전 위치를 쓰기 위해)
+        now_ms = time.time() * 1000
+        self._cursor_trail.append((now_ms, self._cursor_nx, self._cursor_ny))
+        # 집게를 시작하는 순간: 손가락을 오므리며 미끄러진 커서를 조금 전 위치로 되돌림
+        if name in HOLD_GESTURES and self._last_gesture_name not in HOLD_GESTURES:
+            self._rollback_cursor(now_ms - config.PINCH_CURSOR_ROLLBACK_MS)
+        self._last_gesture_name = name
         # 음성 주문 창이 열려 있으면 제스처를 다이얼로그로 라우팅(배경 오작동 방지)
         if self._active_voice_dialog is not None:
             self.cursor.hide()                        # 메인 커서 숨김(창이 자체 커서 사용)
@@ -997,9 +1113,9 @@ class KioskMainWindow(QMainWindow):
                 self._cursor_nx, self._cursor_ny = x, y
                 self._active_voice_dialog.receive_aim(x, y)
                 return
-            if name in ("fist_hold", "sign_hold"):
+            if name in HOLD_GESTURES:
                 return                                # 집는 중 → 드웰 진행 유지
-            if name in ("swipe_left", "swipe_right", "fist", "sign_yes"):
+            if name in SWIPE_GESTURES or name in SELECT_GESTURES:
                 now = time.time() * 1000
                 if now - self._last_gesture_action_ms < self._gesture_cooldown_ms(name):
                     return
@@ -1021,9 +1137,9 @@ class KioskMainWindow(QMainWindow):
                 self._cursor_nx, self._cursor_ny = x, y
                 self._update_dialog_dwell(x, y)
                 return
-            if name in ("fist_hold", "sign_hold"):
+            if name in HOLD_GESTURES:
                 return                                # 집는 중 → 드웰 진행 유지
-            if name in ("fist", "sign_yes", "swipe_left", "swipe_right"):
+            if name in SELECT_GESTURES:
                 now = time.time() * 1000
                 if now - self._last_gesture_action_ms < self._gesture_cooldown_ms(name):
                     return
@@ -1052,10 +1168,10 @@ class KioskMainWindow(QMainWindow):
             self.cursor.move_norm(central.width(), central.height(), x, y)
             self._update_dwell(x, y)                  # 드웰(머무름) 선택 진행
             return
-        if name in ("fist_hold", "sign_hold"):
+        if name in HOLD_GESTURES:
             return                                    # 쥐는/집는 중 → 커서·드웰 유지
         # 실제 '동작' 제스처만, 일정 간격(쿨다운)을 두고 한 번씩 실행 → 연속 오작동 차단
-        if name not in ("swipe_left", "swipe_right", "fist", "sign_yes"):
+        if name not in SWIPE_GESTURES and name not in SELECT_GESTURES:
             return
         self._reset_dwell()                           # 동작이 실행되면 드웰 리셋
         now = time.time() * 1000
@@ -1066,9 +1182,9 @@ class KioskMainWindow(QMainWindow):
 
     def _gesture_cooldown_ms(self, name: str) -> float:
         """동작별 차등 쿨다운: 담기는 짧게(연속 담기), 스와이프/결제는 넉넉히."""
-        if name == "fist":
+        if name in SELECT_GESTURES or name == "select":
             return config.GRAB_COOLDOWN_MS
-        if name in ("swipe_left", "swipe_right"):
+        if name in SWIPE_GESTURES:
             return config.SWIPE_COOLDOWN_MS
         return config.GESTURE_ACTION_COOLDOWN_MS
 
@@ -1082,6 +1198,13 @@ class KioskMainWindow(QMainWindow):
             self._reset_dwell()
             return
         target = self._dwell_target_under_cursor()
+        # 방금 드웰로 선택한 대상 위에 커서가 계속 있으면 다시 선택하지 않음(같은 메뉴 반복 담기 방지).
+        # 커서가 그 대상을 벗어나야 잠금이 풀립니다.
+        if self._dwell_lock is not None:
+            if target == self._dwell_lock:
+                self._reset_dwell()
+                return
+            self._dwell_lock = None
         if target is None:
             self._reset_dwell()
             return
@@ -1100,6 +1223,7 @@ class KioskMainWindow(QMainWindow):
             if now - self._last_gesture_action_ms < config.GRAB_COOLDOWN_MS:
                 return
             self._last_gesture_action_ms = now
+            self._dwell_lock = target             # 커서가 벗어날 때까지 같은 대상 재선택 금지
             self._activate_dwell(target)
             self._reset_dwell()
 
@@ -1176,6 +1300,12 @@ class KioskMainWindow(QMainWindow):
             return
         cur.move_norm(dlg.width(), dlg.height(), nx, ny)
         target = self._dialog_button_under_cursor(nx, ny)
+        if self._dialog_dwell_lock is not None:          # 방금 누른 버튼 위에 계속 있으면 대기
+            if target is self._dialog_dwell_lock:
+                self._dialog_dwell_target = None
+                cur.set_progress(0.0)
+                return
+            self._dialog_dwell_lock = None
         if target is None:
             self._dialog_dwell_target = None
             cur.set_progress(0.0)
@@ -1195,6 +1325,7 @@ class KioskMainWindow(QMainWindow):
                 return
             self._last_gesture_action_ms = now
             self._dialog_dwell_target = None
+            self._dialog_dwell_lock = target
             cur.set_progress(0.0)
             if target.isEnabled():
                 target.click()
@@ -1214,23 +1345,34 @@ class KioskMainWindow(QMainWindow):
         return None
 
     def _handle_dialog_gesture(self, name: str) -> None:
-        """팝업에서 주먹 쥐기 / 엄지척 → '네' 버튼 클릭(스와이프는 무시)"""
+        """팝업에서 집게 손 → 커서가 가리키는 버튼을 누름(가리킨 버튼이 없으면 '네').
+
+        눈이 불편한 손님은 커서 위치를 볼 수 없으므로, 아무 데서나 집어도 '네'가 되게 둡니다.
+        """
         if self._active_dialog is None:
             return
-        if name in ("fist", "sign_yes"):
-            yes_btn = getattr(self._active_dialog, "yes_btn", None)
-            if yes_btn is not None:
-                yes_btn.click()
+        if name in SELECT_GESTURES or name == "select":
+            target = self._dialog_button_under_cursor(self._cursor_nx, self._cursor_ny)
+            if target is None:
+                target = getattr(self._active_dialog, "yes_btn", None)
+            if target is not None and target.isEnabled():
+                target.click()
 
     def _handle_gesture_action(self, name: str) -> None:
-        # 엄지척은 '쥐기'와 똑같이 처리합니다. 엄지 인식은 흔들리기 쉬워서
-        # 실수로 결제되지 않도록 결제는 '결제 버튼 위 드웰'·터치·음성으로만 합니다.
-        if name == "sign_yes":
-            name = "fist"
+        # 설정에서 고른 선택 손동작(기본: 집게 손)만 '선택'으로 처리합니다. "select" 는 시연 버튼용.
+        # 선택은 커서 아래의 버튼을 그대로 누릅니다(결제 버튼 포함, 손동작 켜기/끄기 버튼만 제외).
+        if name in SELECT_GESTURES:
+            name = "select"
+        elif name in ("fist", "sign_yes"):
+            return                                # 선택으로 쓰지 않는 손동작(설정으로 끔)
+        if name == "select":
+            self._pinch_click()
+            self._reset_idle()
+            return
         if self.stack.currentIndex() == SCREEN_WELCOME:
             # 집기는 커서가 가리키는 버튼만 누릅니다. 지나가는 손짓으로 넘어가 버리면
             # 눈이 불편한 손님에게 묻는 접근성 안내를 건너뛰게 되기 때문입니다.
-            if name == "fist" and not self.cursor.isHidden():
+            if name == "select" and not self.cursor.isHidden():
                 if self._cursor_over_widget(self.start_btn):
                     self._go_menu()
                 elif self._cursor_over_widget(self.welcome_voice_btn):
@@ -1246,7 +1388,12 @@ class KioskMainWindow(QMainWindow):
         elif name == "swipe_left":
             self._select_category(cats[(idx - 1) % len(cats)])
             self._show_toast("👈 " + self.tr.t("prev"))
-        elif name == "fist":
+        elif name in ("swipe_up", "swipe_down"):
+            # 휘두르는 동안 커서도 같이 움직이므로, 휘두르기 전 위치로 되돌려 대상(메뉴/장바구니)을 정함
+            self._rollback_cursor(time.time() * 1000 - config.SWIPE_V_WINDOW_MS - 100)
+            # 손을 위로 → 아래쪽 목록이 올라옴(터치와 같은 방향)
+            self._swipe_scroll(+1 if name == "swipe_up" else -1)
+        elif name == "select":
             # 커서가 가리키는 메뉴를 담는다(가리킨 게 없으면 안내, 커서가 없으면 베스트)
             item = self._menu_item_under_cursor()
             if item is not None:
@@ -1259,6 +1406,116 @@ class KioskMainWindow(QMainWindow):
                     target = next((m for m in items if m.is_best), items[0])
                     self._add_to_cart(target)
         self._reset_idle()
+
+    def _pinch_click(self) -> None:
+        """집게 손: 손 커서 아래에 있는 것을 손가락으로 누른 것처럼 클릭합니다.
+
+        메뉴 카드, 카테고리 탭, 세트·음성 주문 버튼, 장바구니 +/−/✕, 전체 비우기, 결제하기,
+        위쪽 언어·고대비·소리 버튼, 시연 도구 버튼까지 화면의 모든 버튼을 누를 수 있습니다.
+        (커서가 안 보일 때 = 시연 버튼으로 담기를 누른 경우는 지금 카테고리의 베스트 메뉴를 담음)
+        """
+        target = self._clickable_under_cursor()
+        if getattr(config, "GESTURE_DEBUG", False):
+            central = self.centralWidget()
+            under = central.childAt(int(self._cursor_nx * central.width()),
+                                    int(self._cursor_ny * central.height())) if central else None
+            print(f"[집게클릭] 커서=({self._cursor_nx:.2f},{self._cursor_ny:.2f}) "
+                  f"커서보임={not self.cursor.isHidden()} 아래={type(under).__name__ if under else None} "
+                  f"누를버튼={(target.text()[:12] if target else None)!r}", flush=True)
+        if target is not None:
+            target.click()
+            return
+        if self.stack.currentIndex() != SCREEN_MENU:
+            return
+        if not self.cursor.isHidden():
+            self._show_toast(self.tr.t("point_then_fist"))   # 빈 곳을 집음 → 사용법 안내
+            return
+        items = menu_data.items_in_category(self.current_category)
+        if items:
+            self._add_to_cart(next((m for m in items if m.is_best), items[0]))
+
+    def _clickable_under_cursor(self) -> QAbstractButton | None:
+        """손 커서 아래에서 누를 수 있는 버튼을 찾습니다(커서가 안 보이면 None).
+
+        '손동작 켜기/끄기' 버튼은 제외합니다. 손동작으로 손동작을 꺼 버리면 다시 켤 방법이
+        터치밖에 없어, 손으로만 쓰는 손님이 더는 조작할 수 없게 되기 때문입니다.
+        """
+        central = self.centralWidget()
+        if central is None or self.cursor.isHidden():
+            return None
+        px = int(self._cursor_nx * central.width())
+        py = int(self._cursor_ny * central.height())
+        exact = self._button_at(central, px, py)
+        if exact is not None:
+            return exact
+        # 버튼을 살짝 빗나갔으면, 가까운 버튼(PINCH_SNAP_RADIUS 안)을 누름.
+        # 결제하기·전체 비우기는 실수로 눌리면 안 되므로 정확히 가리켰을 때만.
+        r = config.PINCH_SNAP_RADIUS
+        best, best_d = None, None
+        for step in (r / 3, 2 * r / 3, r):
+            for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                b = self._button_at(central, int(px + ddx * step), int(py + ddy * step))
+                if b is None or b in (self.checkout_btn, self.clear_btn):
+                    continue
+                rect = b.rect().translated(b.mapTo(central, b.rect().topLeft()))
+                cx = min(max(px, rect.left()), rect.right())
+                cy = min(max(py, rect.top()), rect.bottom())
+                d = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+                if d <= r and (best_d is None or d < best_d):
+                    best, best_d = b, d
+        return best
+
+    def _button_at(self, central, px: int, py: int) -> QAbstractButton | None:
+        """화면 좌표 (px, py) 에 있는, 누를 수 있는 버튼(손동작 켜기/끄기 버튼 제외)."""
+        w = central.childAt(px, py)
+        while w is not None and w is not central:
+            if isinstance(w, QAbstractButton):
+                if w.isEnabled() and w.isVisible() and w is not self.gesture_btn:
+                    return w
+                return None
+            w = w.parentWidget()
+        return None
+
+    def _rollback_cursor(self, at_ms: float) -> None:
+        """커서를 at_ms 시각의 위치로 되돌립니다(그 시각 이전 기록 중 가장 최근 것)."""
+        past = [(t, x, y) for (t, x, y) in self._cursor_trail if t <= at_ms]
+        if not past:
+            return
+        _t, x, y = past[-1]
+        self._cursor_nx, self._cursor_ny = x, y
+        central = self.centralWidget()
+        if central is not None and not self.cursor.isHidden():
+            self.cursor.move_norm(central.width(), central.height(), x, y)
+        if self._active_voice_dialog is not None:
+            self._active_voice_dialog._aim = (x, y)
+
+    def _swipe_scroll(self, direction: int) -> None:
+        """손동작 위/아래 스와이프로 목록을 넘깁니다.
+
+        커서가 장바구니 위에 있으면 장바구니를, 아니면 메뉴 목록을 넘깁니다.
+        direction=+1 은 아래쪽 내용을 보여 주고(-1 은 위쪽), 부드럽게 움직입니다.
+        """
+        if not config.SWIPE_SCROLL_ENABLED:
+            return
+        over_cart = (not self.cursor.isHidden()
+                     and self._cursor_over_widget(self.cart_scroll))
+        area = self.cart_scroll if over_cart else self.menu_scroll
+        bar = area.verticalScrollBar()
+        if getattr(config, "GESTURE_DEBUG", False):
+            print(f"[스와이프] {'장바구니' if over_cart else '메뉴'} 방향={direction:+d} "
+                  f"현재={bar.value()} 최대={bar.maximum()}", flush=True)
+        if bar.maximum() <= bar.minimum():
+            self._show_toast("↕ " + self.tr.t("nothing_to_scroll"))   # 넘길 내용이 없음을 알려 줌
+            return
+        step = max(1, int(area.viewport().height() * config.SWIPE_SCROLL_FRACTION))
+        target = max(bar.minimum(), min(bar.maximum(), bar.value() + direction * step))
+        anim = QPropertyAnimation(bar, b"value", self)
+        anim.setDuration(350)
+        anim.setStartValue(bar.value())
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._scroll_anim = anim                  # 애니메이션이 끝나기 전에 사라지지 않게 보관
 
     def _menu_item_under_cursor(self) -> menu_data.MenuItem | None:
         """제스처 커서가 놓인 위치의 메뉴 카드를 찾아 그 상품을 돌려줍니다."""

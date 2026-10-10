@@ -311,7 +311,7 @@ def test_UC_C2_point_then_fist_adds_pointed_item():
         w._last_gesture_action_ms = 0.0
         for _ in range(60):                        # 에임 커서는 프레임당 CURSOR_MAX_STEP 만 이동 → 목표까지 여러 프레임
             w._on_gesture("point", nx, ny)         # 메뉴를 가리킴(커서 이동)
-        w._on_gesture("fist", 0.99, 0.99)          # 주먹: 좌표 무시, 가리킨 위치 사용
+        w._on_gesture("pinch", 0.99, 0.99)         # 집게 손: 좌표 무시, 가리킨 위치 사용
         ids = [l.item.item_id for l in w.cart.lines]
         assert card.item.item_id in ids            # 가리킨 그 메뉴가 담김
     finally:
@@ -390,9 +390,9 @@ def test_UC_C8_fist_does_not_jump_cursor():
         for _ in range(60):                        # 에임 커서가 목표 카드까지 이동(프레임당 이동 제한)
             w._on_gesture("point", nx, ny)
         saved = (w._cursor_nx, w._cursor_ny)
-        w._on_gesture("fist_hold", 0.1, 0.1)       # 쥐는 중: 커서 유지
+        w._on_gesture("pinch_hold", 0.1, 0.1)      # 집는 중: 커서 유지
         assert (w._cursor_nx, w._cursor_ny) == saved
-        w._on_gesture("fist", 0.1, 0.1)            # 쥐기 완료
+        w._on_gesture("pinch", 0.1, 0.1)           # 집기 완료
         assert any(l.item.item_id == card.item.item_id for l in w.cart.lines)
     finally:
         w.close()
@@ -462,14 +462,14 @@ def test_UC_C13_welcome_pinch_only_on_button():
     try:
         w.resize(1080, 1920); w.show(); _app().processEvents()
         w._gesture_enabled = True; w._busy = False; w._last_gesture_action_ms = 0.0
-        w._on_gesture("fist", 0.5, 0.5)            # 커서 없이 집기 → 무시
+        w._on_gesture("pinch", 0.5, 0.5)           # 커서 없이 집기 → 무시
         w._on_gesture("sign_yes", 0.5, 0.5)
         assert w.stack.currentIndex() == WEL
         nx, ny = _norm_center(w, w.start_btn)
         for _ in range(60):                        # 커서를 '주문 시작' 버튼 위로
             w._on_gesture("open_palm", nx, ny)
         w._last_gesture_action_ms = 0.0
-        w._on_gesture("fist", nx, ny)              # 버튼을 가리키고 집기 → 시작
+        w._on_gesture("pinch", nx, ny)             # 버튼을 가리키고 집기 → 시작
         assert w.stack.currentIndex() == MENU
     finally:
         w.close()

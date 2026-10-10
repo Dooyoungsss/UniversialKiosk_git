@@ -35,12 +35,15 @@ except Exception:                      # PyQt6 미설치 환경 보호
     def pyqtSignal(*a, **k):           # type: ignore
         return None
 
+import config
 from config import (
     CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, FACE_MAX_NUM, HAND_MAX_NUM,
     SWIPE_MIN_DISTANCE, SWIPE_COOLDOWN_MS, FIST_HOLD_FRAMES, AGE_INFER_EVERY,
     FINGER_EXTEND_RATIO, FINGER_FOLD_RATIO, FINGER_ANGLE_EXTEND_DEG,
     FINGER_ANGLE_FOLD_DEG, GESTURE_VOTE_WINDOW, GESTURE_VOTE_MIN, PINCH_RATIO,
     ONE_EURO_MIN_CUTOFF, ONE_EURO_BETA, ONE_EURO_DCUTOFF, AIM_USE_PALM, AIM_ZONE,
+    SWIPE_SCROLL_ENABLED, PINCH_MIN_INDEX_REACH, SWIPE_V_WINDOW_MS, SWIPE_V_TRAVEL,
+    AIM_AUTO_CENTER, AIM_SPAN, AIM_RECENTER_AFTER_S, AIM_EDGE_MARGIN,
 )
 from core.mathutils import OneEuroFilter, cosine_similarity, equalize_lighting
 from core.age_model import AgeEstimator
@@ -92,9 +95,10 @@ class GestureRecognizer:
 
     인식 제스처(안정적인 '에임 + 핀치 + 드웰' 조합):
       · 손을 편하게 들기(펼친 손/검지/V)  → point / open_palm / sign_two / idle (커서 이동)
-      · 핀치(엄지·검지 집기) / 주먹  → fist (가리킨 메뉴 담기)
+      · 집게 손(엄지·검지 끝 맞대기) → pinch (가리킨 메뉴 담기·버튼 누르기 = '선택')
+      · 주먹 / 엄지척               → fist / sign_yes (설정 SELECT_GESTURES 에 넣을 때만 '선택')
       · 손바닥 펴서 좌/우로 휘두르기 → swipe_left / swipe_right (카테고리 넘기기)
-      · 엄지척                      → sign_yes (팝업 '예' 확인. 메뉴에선 주먹과 같게 처리, 결제엔 안 씀)
+      · 손바닥 펴서 위/아래로 휘두르기 → swipe_up / swipe_down (메뉴·장바구니 목록 넘기기)
 
     정확도 개선(플리커/떨림/오인식 억제):
       · 손가락 펴짐 판정에 히스테리시스(이중 임계값) + 관절 각도 병행
@@ -118,6 +122,8 @@ class GestureRecognizer:
         # 손 모양 다수결 투표 큐
         self._pose_votes: deque[tuple] = deque(maxlen=GESTURE_VOTE_WINDOW)
         self._last_x: float | None = None
+        self._last_y: float | None = None
+        self._vtrack: deque = deque()               # 위/아래 스와이프 판정용 (시각, x, y) 기록
         self._last_swipe_t = 0.0
         self._fist_frames = 0
         self._signyes_frames = 0
@@ -185,8 +191,12 @@ class GestureRecognizer:
         ring = self._finger_extended(lm, 16)
         pinky = self._finger_extended(lm, 20)
         thumb = self._thumb_extended(lm)
-        # 핀치(집기): 엄지끝~검지끝 거리를 손 크기로 정규화
-        pinch = (self._dist(lm[4], lm[8]) / hand_scale) < PINCH_RATIO
+        # 핀치(집게 손): 엄지끝~검지끝 거리를 손 크기로 정규화.
+        # 단, 주먹은 엄지 끝이 접힌 검지 옆에 붙어 집게처럼 보이므로 검지가 앞으로 뻗어 있을 때만 인정.
+        index_reach = self._dist(lm[8], lm[0]) / (self._dist(lm[6], lm[0]) + 1e-9)
+        pinch_gap = self._dist(lm[4], lm[8]) / hand_scale
+        pinch = pinch_gap < PINCH_RATIO and index_reach >= PINCH_MIN_INDEX_REACH
+        self.last_metrics = (pinch_gap, index_reach)      # 진단 로그용
 
         # ── 다중 프레임 다수결: 최근 N프레임 손모양이 과반일 때만 그 모양으로 확정 ──
         pattern = (index, middle, ring, pinky, thumb, pinch)
@@ -202,20 +212,23 @@ class GestureRecognizer:
         palm_x = self._palm_fx.filter((lm[0].x + lm[9].x) / 2, now)
         palm_y = self._palm_fy.filter((lm[0].y + lm[9].y) / 2, now)
 
-        # 0) 핀치(집기) → 담기. 주먹보다 안정적이라 먼저 판정.
+        # 0) 핀치(집게 손: 엄지·검지 끝 맞대기) → 선택. 주먹보다 안정적이라 먼저 판정.
+        #    잠깐(FIST_HOLD_FRAMES) 유지해야 확정해서, 손가락이 스치기만 해도 눌리지 않습니다.
         if pinch:
-            self._last_x = None
+            self._last_x = self._last_y = None
+            self._vtrack.clear()
             self._signyes_frames = 0
             self._fist_frames += 1
             if self._fist_frames >= FIST_HOLD_FRAMES:
                 self._fist_frames = 0
-                return "fist", (tip_x, tip_y)
-            return "fist_hold", (tip_x, tip_y)
+                return "pinch", (tip_x, tip_y)
+            return "pinch_hold", (tip_x, tip_y)
 
         # 1) 검지만 펴짐 → 포인팅(커서 이동). 가리키기 우선.
         if index and not middle and not ring and not pinky:
             self._fist_frames = 0
-            self._last_x = None
+            self._last_x = self._last_y = None
+            self._vtrack.clear()
             # 에임(커서)은 손바닥 중심이 더 안정적. 정밀 포인팅이 필요하면 손끝 사용.
             if AIM_USE_PALM:
                 return "point", (palm_x, palm_y)
@@ -224,7 +237,8 @@ class GestureRecognizer:
         # 2) 네 손가락이 접힘(닫힌 손) → 담기(fist). 엄지가 또렷하면 확인(sign_yes).
         #    fist/sign_yes 모두 몇 프레임 '유지'돼야 확정(엄지 깜빡임 무시).
         if n_main == 0:
-            self._last_x = None
+            self._last_x = self._last_y = None
+            self._vtrack.clear()
             if thumb:
                 self._fist_frames = 0
                 self._signyes_frames += 1
@@ -245,25 +259,46 @@ class GestureRecognizer:
         if index and middle and not ring and not pinky:
             return "sign_two", (palm_x, palm_y)
 
-        # 4) 손가락 다수 펼침 → 좌우 스와이프 / 손바닥
+        # 4) 손가락 다수 펼침 → 좌우·위아래 스와이프 / 손바닥
         if n_main >= 3:
             # 스와이프 최소 이동량을 손 크기로 정규화(멀든 가깝든 일관).
             min_dist = SWIPE_MIN_DISTANCE * (hand_scale / 0.18)
-            if self._last_x is not None and (now - self._last_swipe_t) > SWIPE_COOLDOWN_MS:
+            cooled = (now - self._last_swipe_t) > SWIPE_COOLDOWN_MS
+            # 위/아래: 짧은 시간(SWIPE_V_WINDOW_MS) 동안 움직인 거리로 판정.
+            # 한 프레임 사이 이동만 보면 아주 빠르게 휘둘러야 해서 거의 인식되지 않았음.
+            if SWIPE_SCROLL_ENABLED:
+                self._vtrack.append((now, palm_x, palm_y))
+                while self._vtrack and now - self._vtrack[0][0] > SWIPE_V_WINDOW_MS:
+                    self._vtrack.popleft()
+                _t0, x0, y0 = self._vtrack[0]
+                vdx, vdy = palm_x - x0, palm_y - y0
+                if (cooled and abs(vdy) > SWIPE_V_TRAVEL * hand_scale
+                        and abs(vdy) > 1.5 * abs(vdx)):
+                    # 화면 좌표는 아래로 갈수록 y 가 커짐: 손이 위로 → swipe_up
+                    return self._swiped("swipe_up" if vdy < 0 else "swipe_down",
+                                        now, palm_x, palm_y)
+            if self._last_x is not None and self._last_y is not None and cooled:
                 dx = palm_x - self._last_x
-                if dx > min_dist:
-                    self._last_swipe_t = now
-                    self._last_x = palm_x
-                    return "swipe_right", (palm_x, palm_y)
-                if dx < -min_dist:
-                    self._last_swipe_t = now
-                    self._last_x = palm_x
-                    return "swipe_left", (palm_x, palm_y)
-            self._last_x = palm_x
+                dy = palm_y - self._last_y
+                # 좌우: 한 프레임 사이에 크게 움직였을 때(카테고리 넘기기는 실수로 안 되게 엄격히)
+                if abs(dx) >= abs(dy):
+                    if dx > min_dist:
+                        return self._swiped("swipe_right", now, palm_x, palm_y)
+                    if dx < -min_dist:
+                        return self._swiped("swipe_left", now, palm_x, palm_y)
+            self._last_x, self._last_y = palm_x, palm_y
             return "open_palm", (palm_x, palm_y)
 
-        self._last_x = palm_x
+        self._vtrack.clear()
+        self._last_x, self._last_y = palm_x, palm_y
         return "idle", (palm_x, palm_y)
+
+    def _swiped(self, name: str, now: float, x: float, y: float):
+        """스와이프 확정: 쿨다운 시작 + 기준 위치 갱신."""
+        self._last_swipe_t = now
+        self._last_x, self._last_y = x, y
+        self._vtrack.clear()
+        return name, (x, y)
 
 
 # ──────────────────────────────────────────────
@@ -382,11 +417,10 @@ if _QT:
                     if hand_res.multi_hand_landmarks:
                         g, (gx, gy) = self.gesture_recognizer.classify(
                             hand_res.multi_hand_landmarks[0])
-                        # 세로로 긴 화면: 카메라의 조준 영역(AIM_ZONE)을 화면 전체로 넓혀 보냄
-                        x0, y0, x1, y1 = AIM_ZONE
-                        sx = min(1.0, max(0.0, (gx - x0) / (x1 - x0)))
-                        sy = min(1.0, max(0.0, (gy - y0) / (y1 - y0)))
+                        # 카메라 속 손 위치 → 화면 좌표(탄력 조준)
+                        sx, sy = self._aim_map(g, gx, gy)
                         self.gesture.emit(g, float(sx), float(sy))
+                        self._debug_gesture(g, sx, sy, gx, gy)
                         # 미리보기에 손 위치 표시
                         cv2.circle(frame, (int(gx * frame.shape[1]),
                                            int(gy * frame.shape[0])), 12, (0, 255, 0), -1)
@@ -403,6 +437,60 @@ if _QT:
                 except Exception:
                     pass
                 self.status.emit("vision_stopped")
+
+        def _aim_map(self, g: str, gx: float, gy: float) -> tuple[float, float]:
+            """카메라 속 손 위치(0~1)를 화면 좌표(0~1)로 바꿉니다.
+
+            탄력 조준(AIM_AUTO_CENTER): 손을 처음 든 위치를 화면 가운데로 삼고, 손이 조준
+            범위(AIM_SPAN) 밖으로 나가면 범위를 손 쪽으로 끌고 갑니다. 그래서 카메라가 높든
+            낮든, 손님이 크든 작든 화면 끝까지 닿습니다. 손이 한동안 안 보이면 다시 맞춥니다.
+            집게처럼 손끝 좌표가 오는 동작은 범위를 움직이지 않습니다(커서 튐 방지).
+            """
+            def clamp(v: float) -> float:
+                return min(1.0, max(0.0, v))
+
+            if not AIM_AUTO_CENTER:
+                x0, y0, x1, y1 = AIM_ZONE
+                return clamp((gx - x0) / (x1 - x0)), clamp((gy - y0) / (y1 - y0))
+            now = time.time()
+            span_x, span_y = AIM_SPAN
+            center = getattr(self, "_aim_center", None)
+            if center is None or now - getattr(self, "_last_hand_t", 0.0) > AIM_RECENTER_AFTER_S:
+                center = [gx, gy]
+            self._last_hand_t = now
+            if g in ("point", "open_palm", "idle", "sign_two"):   # 손바닥 조준일 때만 범위 이동
+                hw, hh = span_x / 2, span_y / 2
+                if gx < center[0] - hw:
+                    center[0] = gx + hw
+                elif gx > center[0] + hw:
+                    center[0] = gx - hw
+                if gy < center[1] - hh:
+                    center[1] = gy + hh
+                elif gy > center[1] + hh:
+                    center[1] = gy - hh
+            # 조준 범위가 항상 카메라 화면 안(가장자리 AIM_EDGE_MARGIN 안쪽)에 있게 함.
+            # 손을 카메라 아래쪽에서 처음 들어도 범위가 화면 밖으로 나가 끝에 못 닿는 일이 없음.
+            m = AIM_EDGE_MARGIN
+            center[0] = min(max(center[0], span_x / 2 + m), 1 - span_x / 2 - m)
+            center[1] = min(max(center[1], span_y / 2 + m), 1 - span_y / 2 - m)
+            self._aim_center = center
+            return (clamp(0.5 + (gx - center[0]) / span_x),
+                    clamp(0.5 + (gy - center[1]) / span_y))
+
+        def _debug_gesture(self, g: str, sx: float = 0.0, sy: float = 0.0,
+                           gx: float = 0.0, gy: float = 0.0) -> None:
+            """집게 손 진단: 판정 수치를 0.5초마다(동작이 확정되면 즉시) 콘솔에 출력."""
+            if not getattr(config, "GESTURE_DEBUG", False):
+                return
+            now = time.time()
+            event = g in ("pinch", "fist", "sign_yes") or g.startswith("swipe")
+            if not event and now - getattr(self, "_dbg_g_last", 0.0) < 0.5:
+                return
+            self._dbg_g_last = now
+            gap, reach = getattr(self.gesture_recognizer, "last_metrics", (0.0, 0.0))
+            print(f"[손동작진단] 결과={g:11s} 커서=({sx:.2f},{sy:.2f}) 카메라=({gx:.2f},{gy:.2f}) "
+                  f"집게거리={gap:.2f}(기준<{PINCH_RATIO}) "
+                  f"검지뻗음={reach:.2f}(기준≥{PINCH_MIN_INDEX_REACH})", flush=True)
 
         def stop(self) -> None:
             self._running = False

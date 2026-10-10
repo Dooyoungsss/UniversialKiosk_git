@@ -13,12 +13,33 @@ from __future__ import annotations
 from PyQt6.QtCore import (Qt, QTimer, pyqtSignal, QPropertyAnimation, QPoint,
                           QRect, QSize)
 from PyQt6.QtGui import QPainter, QPen, QColor
-from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLayout, QPushButton,
+from PyQt6.QtWidgets import (QAbstractScrollArea, QDialog, QFrame, QHBoxLayout, QLabel,
+                             QLayout, QPushButton, QScroller, QScrollerProperties,
                              QSizePolicy, QVBoxLayout, QWidget,
                              QGraphicsOpacityEffect)
 
 from core.menu_data import MenuItem
 from core.order import CartLine
+
+
+def enable_swipe_scroll(area: QAbstractScrollArea) -> None:
+    """손가락(터치)이나 마우스로 끌어서 목록을 넘기는 '스와이프 스크롤'을 켭니다.
+
+    키오스크 터치 화면에서는 가는 스크롤바를 잡기 어렵기 때문에, 목록 아무 곳이나
+    위아래로 밀면 관성 있게 넘어가게 합니다. 짧게 톡 치면 지금처럼 버튼이 눌리고,
+    일정 거리 이상 끌었을 때만 스크롤로 처리합니다.
+    """
+    viewport = area.viewport()
+    QScroller.grabGesture(viewport, QScroller.ScrollerGestureType.LeftMouseButtonGesture)
+    scroller = QScroller.scroller(viewport)
+    props = scroller.scrollerProperties()
+    metric = QScrollerProperties.ScrollMetric
+    off = QScrollerProperties.OvershootPolicy.OvershootAlwaysOff
+    props.setScrollMetric(metric.HorizontalOvershootPolicy, off)   # 끝에서 튕기는 효과 끔
+    props.setScrollMetric(metric.VerticalOvershootPolicy, off)
+    props.setScrollMetric(metric.DragStartDistance, 0.006)       # 6mm 이상 끌어야 스크롤(톡 치기는 클릭)
+    props.setScrollMetric(metric.MousePressEventDelay, 0.15)     # 끌기인지 판단하는 짧은 대기(초)
+    scroller.setScrollerProperties(props)
 
 
 class FlowLayout(QLayout):
@@ -353,8 +374,15 @@ class ChoiceDialog(QDialog):
         lay.addWidget(self.yes_btn)
         lay.addWidget(self.no_btn)
 
-        # 테마(글자 크기)를 먼저 입힌 뒤, 그 글씨로 줄바꿈된 높이에 딱 맞춰 크기를 정함
+        # 테마(글자 크기)를 먼저 입힌 뒤, 그 글씨로 줄바꿈된 높이에 딱 맞춰 크기를 정함.
+        # 메인 화면이 디자인보다 좁으면(작은 모니터) 그 폭에 맞춰 줄여서 화면 밖으로 나가지 않게 함
         if style:
             self.setStyleSheet(style)
         self.ensurePolished()
-        self.setFixedSize(self.WIDTH, lay.totalHeightForWidth(self.WIDTH))
+        width = self.WIDTH
+        if parent is not None and parent.width() > 0:
+            width = min(width, parent.width() - 40)
+        height = lay.totalHeightForWidth(width)
+        if parent is not None and parent.height() > 0:
+            height = min(height, parent.height() - 40)
+        self.setFixedSize(width, height)
