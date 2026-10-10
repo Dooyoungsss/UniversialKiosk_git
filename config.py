@@ -46,7 +46,7 @@ CHILD_FONT_SCALE = 1.3
 # ──────────────────────────────────────────────
 # 비전 AI(카메라) 설정
 # ──────────────────────────────────────────────
-CAMERA_INDEX = 0                          # 기본 웹캠 번호
+CAMERA_INDEX = 1                          # 웹캠 번호: 0 = 720p HD Camera, 1 = GENERAL WEBCAM
 VISION_ENABLED = True                     # False 면 카메라를 아예 끄고 데모 모드로 동작
 FACE_MAX_NUM = 1                          # 동시에 추적할 얼굴 수
 HAND_MAX_NUM = 1                          # 동시에 추적할 손 수
