@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>유니버셜 키오스크 — A0 포스터 시안 A (3m 거리용)</title>
+<style>
+  /* A0 실제 크기. 3m 거리에서 읽히도록 본문 52pt 이상, 가장 작은 글자도 44pt 이상 */
+  @page { size: 841mm 1189mm; margin: 0; }
+  :root {
+    --navy: #0E1B3D; --blue: #2D6CDF; --sky: #E8F0FE; --orange: #E8590C; --yellow: #FFD400;
+    --green: #1F7A3D; --purple: #7048E8; --ink: #14213D; --sub: #3D4A66; --bg: #F3F6FC;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 841mm; background: #fff; }
+  body {
+    font-family: 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI Emoji', sans-serif; color: var(--ink);
+    word-break: keep-all; line-height: 1.3;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  b { font-weight: 700; }
+  .page { width: 841mm; height: 1189mm; overflow: hidden; position: relative; display: flex;
+          flex-direction: column; background: var(--bg); break-after: page; }
+  .page:last-child { break-after: auto; }
+  .num { font-family: 'Segoe UI Black', 'Segoe UI', sans-serif; font-weight: 900; }
+  h2 { font-size: 100pt; font-weight: 700; color: var(--navy); line-height: 1.15; }
+  h2 .hl { color: var(--orange); }
+
+  /* ── 1쪽 ── */
+  .hero { height: 372mm; flex: none; display: flex; align-items: center; gap: 30mm; padding: 26mm 45mm 22mm;
+          color: #fff; background: linear-gradient(140deg, #0A1740 0%, #16348F 58%, #2D6CDF 100%); }
+  .hero-text { flex: 1; }
+  .pill { display: inline-block; font-size: 44pt; font-weight: 700; padding: 3mm 11mm; border-radius: 20mm;
+          background: rgba(255,255,255,.16); border: 1mm solid rgba(255,255,255,.45); }
+  .hero h1 { font-size: 220pt; font-weight: 700; line-height: 1.0; letter-spacing: -2mm; margin-top: 8mm; }
+  .team { font-family: 'Segoe UI', sans-serif; font-weight: 700; font-size: 50pt; letter-spacing: 3mm;
+          color: #FFC48A; margin-top: 5mm; }
+  .slogan { font-size: 92pt; font-weight: 700; line-height: 1.15; margin-top: 10mm; }
+  .slogan .hl { color: var(--yellow); }
+  .device { flex: none; display: flex; flex-direction: column; align-items: center; }
+  .screen { width: 168mm; background: #05070F; padding: 4mm; border-radius: 7mm; box-shadow: 0 6mm 18mm rgba(0,0,0,.5); }
+  .screen img { display: block; width: 100%; border-radius: 2mm; }
+  .pole { width: 10mm; height: 14mm; background: linear-gradient(90deg, #AEB8CF, #F4F6FB 50%, #AEB8CF); }
+  .base { width: 90mm; height: 10mm; border-radius: 50%; background: radial-gradient(ellipse at 50% 35%, #F4F6FB 0, #9AA5BF 100%); }
+
+  .sec { padding: 0 45mm; }
+  .who { padding-top: 20mm; }
+  .people { display: grid; grid-template-columns: repeat(5, 1fr); gap: 9mm; margin-top: 10mm; }
+  .person { background: #fff; border-radius: 9mm; padding: 8mm 3mm 9mm; text-align: center;
+            box-shadow: 0 2mm 6mm rgba(14,27,61,.10); }
+  .person .e { font-size: 104pt; line-height: 1.1; }
+  .person .n { font-size: 54pt; font-weight: 700; color: var(--navy); line-height: 1.15; margin-top: 2mm; }
+  .person .q { font-size: 44pt; color: var(--sub); line-height: 1.25; margin-top: 3mm; }
+  .aha { margin-top: 12mm; background: #FFF4C2; border: 1.5mm solid #F2C94C; border-radius: 9mm;
+         padding: 8mm 12mm; font-size: 54pt; line-height: 1.3; color: #3B2F00; }
+  .aha b { color: var(--orange); }
+
+  .features { padding-top: 18mm; flex: 1; display: flex; flex-direction: column; }
+  .feat-list { display: flex; flex-direction: column; gap: 10mm; margin-top: 10mm; }
+  .feat { display: flex; align-items: center; gap: 11mm; background: #fff; border-radius: 9mm; padding: 9mm 12mm 9mm 8mm;
+          box-shadow: 0 2mm 6mm rgba(14,27,61,.10); border-left: 6mm solid var(--c); }
+  .icon { flex: none; width: 62mm; height: 62mm; border-radius: 50%; background: var(--c); display: flex;
+          align-items: center; justify-content: center; font-size: 100pt; position: relative; }
+  .icon .k { position: absolute; left: -4mm; top: -4mm; width: 23mm; height: 23mm; border-radius: 50%; background: var(--navy);
+             color: #fff; font-family: 'Segoe UI Black', 'Segoe UI', sans-serif; font-size: 44pt; display: flex;
+             align-items: center; justify-content: center; border: 1.5mm solid #fff; }
+  .feat h3 { font-size: 78pt; font-weight: 700; color: var(--navy); line-height: 1.15; }
+  .feat p { font-size: 52pt; color: var(--sub); line-height: 1.25; margin-top: 1mm; }
+  .next { text-align: right; font-size: 44pt; font-weight: 700; color: var(--blue); padding: 0 45mm 16mm; }
+
+  /* ── 2쪽 ── */
+  .band { flex: none; height: 168mm; display: flex; align-items: center; justify-content: space-between; padding: 0 45mm;
+          color: #fff; background: linear-gradient(140deg, #0A1740 0%, #16348F 60%, #2D6CDF 100%); }
+  .band h2 { color: #fff; font-size: 140pt; }
+  .band .small { font-size: 48pt; font-weight: 700; text-align: right; color: #DCE6FF; line-height: 1.3; }
+  .flow { display: flex; align-items: stretch; gap: 6mm; margin-top: 18mm; }
+  .step { flex: 1; background: #fff; border-radius: 10mm; padding: 9mm 6mm 10mm; text-align: center;
+          box-shadow: 0 2mm 6mm rgba(14,27,61,.10); border-top: 6mm solid var(--c); }
+  .step .e { font-size: 110pt; line-height: 1.1; }
+  .step .t { font-size: 70pt; font-weight: 700; color: var(--navy); line-height: 1.2; margin-top: 3mm; }
+  .step .d { font-size: 46pt; color: var(--sub); line-height: 1.3; margin-top: 3mm; }
+  .arrow { flex: none; display: flex; align-items: center; font-size: 90pt; color: var(--orange); font-weight: 700; }
+  .screens { padding-top: 16mm; }
+  .shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10mm; margin-top: 8mm; }
+  .shot img { display: block; width: 100%; border-radius: 4mm; border: 1.5mm solid #fff; box-shadow: 0 2mm 7mm rgba(14,27,61,.25); }
+  .shot .l { font-size: 50pt; font-weight: 700; text-align: center; margin-top: 4mm; color: var(--navy); }
+  .h2s { font-size: 50pt; font-weight: 400; color: var(--sub); }
+  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10mm; margin-top: 14mm; }
+  .say { display: flex; align-items: center; gap: 6mm; margin-top: 16mm; }
+  .say .bubble { flex: 1; background: #FFF1E6; border: 1.5mm solid #FFC9A3; border-radius: 10mm; padding: 8mm 10mm;
+                 font-size: 52pt; font-weight: 700; line-height: 1.3; color: #5A2A00; }
+  .say .result { flex: 1.1; background: #E7F7EC; border: 1.5mm solid #A9DFB9; border-radius: 10mm; padding: 8mm 10mm;
+                 font-size: 50pt; line-height: 1.35; color: #0F3D1F; }
+  .say .result b { color: var(--orange); }
+  .fact { background: #fff; border-radius: 10mm; padding: 8mm 7mm 9mm; text-align: center; box-shadow: 0 2mm 6mm rgba(14,27,61,.10); }
+  .fact .big { font-family: 'Segoe UI Black', 'Segoe UI', sans-serif; font-size: 130pt; line-height: 1.05; color: var(--c); }
+  .fact .big small { font-size: 70pt; }
+  .fact .d { font-size: 46pt; line-height: 1.3; margin-top: 3mm; color: var(--ink); }
+  .safe { margin-top: 14mm; background: #fff; border-radius: 10mm; padding: 9mm 12mm; display: flex; gap: 10mm; align-items: center;
+          box-shadow: 0 2mm 6mm rgba(14,27,61,.10); border-left: 6mm solid var(--green); }
+  .safe .e { font-size: 100pt; flex: none; }
+  .safe p { font-size: 52pt; line-height: 1.3; }
+  .safe p b { color: var(--green); }
+  .foot { margin-top: auto; flex: none; height: 118mm; display: flex; flex-direction: column; justify-content: center;
+          align-items: center; gap: 3mm; background: var(--navy); color: #fff; }
+  .foot .tag { font-size: 74pt; font-weight: 700; }
+  .foot .tag .hl { color: var(--yellow); }
+  .foot .tech { font-family: 'Segoe UI', 'Noto Sans KR', sans-serif; font-size: 44pt; color: #C9D5EA; }
+</style>
+</head>
+<body>
+
+<!-- ═════════════ 1쪽: 무엇을 만들었나요? ═════════════ -->
+<section class="page">
+  <header class="hero">
+    <div class="hero-text">
+      <div class="pill">모두를 위한 배리어프리 AI 키오스크</div>
+      <h1>유니버셜<br>키오스크</h1>
+      <div class="team">NO PROBLEM KIOSK</div>
+      <p class="slogan">기계가 사람에게<br><span class="hl">먼저</span> 맞춥니다</p>
+    </div>
+    <div class="device">
+      <div class="screen"><img src="img/welcome_standard.png" alt="첫 화면"></div>
+      <div class="pole"></div><div class="base"></div>
+    </div>
+  </header>
+
+  <section class="sec who">
+    <h2>이런 분들이 <span class="hl">멈춰요</span></h2>
+    <div class="people">
+      <div class="person"><div class="e">👧</div><div class="n">어린이</div><div class="q">버튼이<br>너무 높아요</div></div>
+      <div class="person"><div class="e">👵</div><div class="n">어르신</div><div class="q">글씨가<br>너무 작아요</div></div>
+      <div class="person"><div class="e">🦯</div><div class="n">눈이 불편한 분</div><div class="q">화면이<br>안 보여요</div></div>
+      <div class="person"><div class="e">🌏</div><div class="n">외국인</div><div class="q">한국어를<br>몰라요</div></div>
+      <div class="person"><div class="e">🖐️</div><div class="n">손이 불편한 분</div><div class="q">누르기가<br>힘들어요</div></div>
+    </div>
+    <div class="aha">💡 도움이 필요한 사람일수록 ‘글자 크게’ 버튼을 찾기 어려워요.<br>그래서 <b>키오스크가 먼저 알아보고 맞춰 줍니다!</b></div>
+  </section>
+
+  <section class="sec features">
+    <h2><span class="hl">5가지</span> 핵심 기능</h2>
+    <div class="feat-list">
+      <div class="feat" style="--c:#2FA35A"><div class="icon"><span class="k">1</span>👵</div>
+        <div><h3>나이에 맞춰 화면이 바뀌어요</h3><p>AI가 어린이·어르신을 알아보고 글자를 크게</p></div></div>
+      <div class="feat" style="--c:#4C8DF6"><div class="icon"><span class="k">2</span>✋</div>
+        <div><h3>손대지 않고 손동작으로</h3><p>손바닥을 펴면 커서, 2초 멈추면 선택</p></div></div>
+      <div class="feat" style="--c:#F28C38"><div class="icon"><span class="k">3</span>🔊</div>
+        <div><h3>목소리로 주문해요</h3><p>“눈이 불편하신가요?” → “네!” → 말로 주문</p></div></div>
+      <div class="feat" style="--c:#9B6CF0"><div class="icon"><span class="k">4</span>🌐</div>
+        <div><h3>한국어 · English · 中文</h3><p>외국어로 말하면 화면도 그 언어로</p></div></div>
+      <div class="feat" style="--c:#111111"><div class="icon"><span class="k">5</span>👁</div>
+        <div><h3>고대비 화면</h3><p>검정 바탕에 노랑·흰 글씨, 버튼 한 번으로</p></div></div>
+    </div>
+  </section>
+  <div class="next">뒷장: 어떻게 동작하나요? →</div>
+</section>
+
+<!-- ═════════════ 2쪽: 어떻게 동작하나요? ═════════════ -->
+<section class="page">
+  <header class="band">
+    <h2>어떻게 동작하나요?</h2>
+    <div class="small">27인치 세로<br>터치스크린</div>
+  </header>
+
+  <section class="sec">
+    <div class="flow">
+      <div class="step" style="--c:#4C8DF6"><div class="e">📷🎤</div><div class="t">① 보고 들어요</div><div class="d">카메라와 마이크</div></div>
+      <div class="arrow">→</div>
+      <div class="step" style="--c:#F28C38"><div class="e">🧠</div><div class="t">② AI가 이해해요</div><div class="d">나이 · 손동작 · 말</div></div>
+      <div class="arrow">→</div>
+      <div class="step" style="--c:#2FA35A"><div class="e">🖥️🔊</div><div class="t">③ 맞춰 줘요</div><div class="d">화면과 소리로</div></div>
+    </div>
+  </section>
+
+  <section class="sec screens">
+    <h2>실제 화면 <span class="h2s">(1080 × 1920)</span></h2>
+    <div class="shots">
+      <div class="shot"><img src="img/menu_child.png" alt=""><div class="l">👦 어린이</div></div>
+      <div class="shot"><img src="img/menu_standard.png" alt=""><div class="l">🧑 일반</div></div>
+      <div class="shot"><img src="img/menu_silver.png" alt=""><div class="l">👵 실버</div></div>
+      <div class="shot"><img src="img/menu_high_contrast.png" alt=""><div class="l">👁 고대비</div></div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="say">
+      <div class="bubble">🗣 “불고기버거 세트 하나,<br>콜라는 라지로 주세요”</div>
+      <div class="arrow">→</div>
+      <div class="result">🛒 불고기버거 세트 1개 <b>8,700원</b><br>🔊 “담았어요” 소리로 알려 줘요</div>
+    </div>
+    <div class="facts">
+      <div class="fact" style="--c:#2D6CDF"><div class="big">13<small>/20</small></div><div class="d">20번 중 13번 같아야<br>화면이 바뀌어요</div></div>
+      <div class="fact" style="--c:#E8590C"><div class="big">2<small>초</small></div><div class="d">버튼 위에 2초 멈추면<br>실수 없이 선택</div></div>
+      <div class="fact" style="--c:#1F7A3D"><div class="big">99<small>/99</small></div><div class="d">자동 테스트<br>모두 통과</div></div>
+    </div>
+    <div class="safe"><div class="e">🔒</div>
+      <p><b>얼굴 사진은 저장하지 않아요.</b><br>틀리기 쉬운 기능은 과감히 뺐어요.</p></div>
+  </section>
+
+  <footer class="foot">
+    <div class="tag">웹캠 하나면, <span class="hl">어느 키오스크든</span> 유니버셜하게</div>
+    <div class="tech">Python · PyQt6 · OpenCV · MediaPipe</div>
+  </footer>
+</section>
+
+</body>
+</html>

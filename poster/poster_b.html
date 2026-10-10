@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>유니버셜 키오스크 — A0 포스터 시안 B (고대비 · 화면 중심형, 3m 거리용)</title>
+<style>
+  /* A0 실제 크기. 검정 바탕 + 노랑·흰 글씨(앱의 고대비 모드와 같은 색). 본문 52pt 이상, 최소 44pt */
+  @page { size: 841mm 1189mm; margin: 0; }
+  :root { --bg: #0B0F1A; --card: #161C2C; --yellow: #FFD400; --white: #FFFFFF; --soft: #C9D3E6;
+          --blue: #4C8DF6; --green: #2FA35A; --orange: #F28C38; --purple: #9B6CF0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 841mm; background: var(--bg); }
+  body { font-family: 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI Emoji', sans-serif; color: var(--white);
+         word-break: keep-all; line-height: 1.3; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  b { font-weight: 700; }
+  .page { width: 841mm; height: 1189mm; overflow: hidden; position: relative; display: flex; flex-direction: column;
+          background: radial-gradient(circle at 50% 46%, #1B2645 0, #0B0F1A 62%); break-after: page; padding: 40mm 40mm 34mm; }
+  .page:last-child { break-after: auto; }
+  .y { color: var(--yellow); }
+
+  /* ── 1쪽 ── */
+  .top { text-align: center; }
+  .top .pill { display: inline-block; font-size: 46pt; font-weight: 700; color: #0B0F1A; background: var(--yellow);
+               padding: 3mm 12mm; border-radius: 20mm; }
+  .top h1 { font-size: 210pt; font-weight: 700; line-height: 1.0; letter-spacing: -2mm; margin-top: 10mm; }
+  .top .slogan { font-size: 84pt; font-weight: 700; margin-top: 8mm; line-height: 1.15; }
+  .stage { flex: 1; position: relative; margin-top: 18mm; display: flex; align-items: center; justify-content: center; }
+  .kiosk { display: flex; flex-direction: column; align-items: center; }
+  .screen { width: 390mm; background: #000; padding: 5mm; border-radius: 10mm; box-shadow: 0 0 0 2mm #39425C, 0 10mm 30mm rgba(0,0,0,.6); }
+  .screen img { display: block; width: 100%; border-radius: 3mm; }
+  .pole { width: 16mm; height: 24mm; background: linear-gradient(90deg, #6F7A94, #C9D3E6 50%, #6F7A94); }
+  .base { width: 150mm; height: 14mm; border-radius: 50%; background: radial-gradient(ellipse at 50% 35%, #C9D3E6 0, #4F5A73 100%); }
+  .call { position: absolute; width: 172mm; display: flex; flex-direction: column; align-items: flex-start; gap: 4mm; }
+  .call.l { left: 0; }
+  .call.r { right: 0; }
+  .call .k { flex: none; width: 46mm; height: 46mm; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+             font-size: 82pt; background: var(--c); box-shadow: 0 0 0 2mm #0B0F1A, 0 0 0 3.5mm var(--c); }
+  .call h3 { font-size: 76pt; font-weight: 700; line-height: 1.12; color: var(--yellow); }
+  .call p { font-size: 52pt; line-height: 1.25; color: var(--soft); margin-top: 1mm; }
+  .bottom { text-align: center; font-size: 60pt; font-weight: 700; margin-top: 10mm; }
+  .bottom small { display: block; font-size: 46pt; font-weight: 400; color: var(--soft); margin-top: 2mm; }
+
+  /* ── 2쪽 ── */
+  .p2title { font-size: 130pt; font-weight: 700; line-height: 1.1; }
+  .p2sub { font-size: 54pt; color: var(--soft); margin-top: 4mm; }
+  .stories { flex: 1; display: flex; flex-direction: column; justify-content: space-evenly; gap: 9mm; margin-top: 8mm; }
+  .story { display: grid; grid-template-columns: 160mm 1fr; gap: 12mm; align-items: center; background: var(--card);
+           border-radius: 12mm; padding: 12mm 14mm; border-left: 7mm solid var(--c); }
+  .story .who { text-align: center; }
+  .story .who .e { font-size: 156pt; line-height: 1.05; }
+  .story .who .n { font-size: 58pt; font-weight: 700; color: var(--yellow); margin-top: 2mm; line-height: 1.15; }
+  .steps { display: flex; align-items: center; gap: 5mm; }
+  .stp { flex: 1; text-align: center; }
+  .stp .e { font-size: 112pt; line-height: 1.1; }
+  .stp .t { font-size: 54pt; line-height: 1.25; margin-top: 3mm; }
+  .stp .t b { color: var(--yellow); }
+  .ar { flex: none; font-size: 80pt; color: var(--yellow); font-weight: 700; }
+  .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10mm; margin-top: 10mm; }
+  .numc { text-align: center; border: 1.5mm solid #39425C; border-radius: 12mm; padding: 8mm 4mm 9mm; }
+  .numc .big { font-family: 'Segoe UI Black', 'Segoe UI', sans-serif; font-size: 160pt; line-height: 1.0; color: var(--yellow); }
+  .numc .big small { font-size: 80pt; }
+  .numc .d { font-size: 50pt; line-height: 1.3; margin-top: 3mm; }
+  .end { margin-top: auto; text-align: center; padding-top: 14mm; }
+  .end .tag { font-size: 76pt; font-weight: 700; line-height: 1.2; }
+  .end .lock { font-size: 50pt; color: var(--soft); margin-top: 6mm; }
+
+  /* ── 굴림체 판: build_poster.py 가 <html class="gulim"> 사본으로 따로 인쇄 ── */
+  html.gulim body, html.gulim .numc .big { font-family: 'GulimChe', '굴림체', 'Segoe UI Emoji', sans-serif; }
+  /* 굴림에는 굵은 글꼴이 없어 굵은 글씨가 가늘게 인쇄됨 → 외곽선으로 굵게(워드·한글의 '진하게'와 같은 방식) */
+  html.gulim b, html.gulim .pill, html.gulim h1, html.gulim .slogan, html.gulim .call h3, html.gulim .bottom,
+  html.gulim .p2title, html.gulim .who .n, html.gulim .ar, html.gulim .end .tag,
+  html.gulim .numc .big { -webkit-text-stroke-width: 0.04em; }
+  html.gulim .bottom small { -webkit-text-stroke-width: 0; }
+  html.gulim .call h3 { font-size: 68pt; }   /* 굴림체는 글자 폭이 넓어 '나이 맞춤 화면'이 한 줄에 들어가도록 */
+</style>
+</head>
+<body>
+
+<!-- ═════════════ 1쪽: 한눈에 보는 키오스크 ═════════════ -->
+<section class="page">
+  <div class="top">
+    <div class="pill">모두를 위한 배리어프리 AI 키오스크</div>
+    <h1>유니버셜 키오스크</h1>
+    <p class="slogan">기계가 사람에게 <span class="y">먼저</span> 맞춥니다</p>
+  </div>
+
+  <div class="stage">
+    <div class="kiosk">
+      <div class="screen"><img src="img/menu_silver.png" alt="실버 모드 메뉴 화면"></div>
+      <div class="pole"></div><div class="base"></div>
+    </div>
+
+    <div class="call l" style="top:13%; --c:#2FA35A"><div class="k">👵</div>
+      <div><h3>나이 맞춤 화면</h3><p>어르신이면<br>글자가 1.5배</p></div></div>
+    <div class="call l" style="top:41%; --c:#4C8DF6"><div class="k">✋</div>
+      <div><h3>손동작 주문</h3><p>손바닥 커서,<br>2초 멈추면 선택</p></div></div>
+    <div class="call l" style="top:69%; --c:#F28C38"><div class="k">🔊</div>
+      <div><h3>목소리 주문</h3><p>말로 주문하면<br>소리로 알려 줘요</p></div></div>
+    <div class="call r" style="top:27%; --c:#9B6CF0"><div class="k">🌐</div>
+      <div><h3>한·영·중</h3><p>외국어로 말하면<br>화면도 바뀌어요</p></div></div>
+    <div class="call r" style="top:55%; --c:#FFD400"><div class="k">👁</div>
+      <div><h3>고대비</h3><p>검정 바탕에<br>노랑·흰 글씨</p></div></div>
+  </div>
+
+  <div class="bottom">27인치 세로 터치스크린 · 카메라 · 마이크
+    <small>터치 · 손동작 · 목소리, 편한 방법으로 주문하세요</small></div>
+</section>
+
+<!-- ═════════════ 2쪽: 이렇게 도와줘요 ═════════════ -->
+<section class="page">
+  <h2 class="p2title">이렇게 <span class="y">도와줘요</span></h2>
+  <p class="p2sub">키오스크 앞에 선 다섯 사람의 이야기</p>
+
+  <div class="stories">
+  <div class="story" style="--c:#FF6FA8">
+    <div class="who"><div class="e">👦</div><div class="n">어린이</div></div>
+    <div class="steps">
+      <div class="stp"><div class="e">📷</div><div class="t">카메라가<br>어린이를 확인</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">🎨</div><div class="t">밝은 색,<br><b>큰</b> 그림 카드</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">👇</div><div class="t">버튼은 손 닿는<br>아래쪽에</div></div>
+    </div>
+  </div>
+
+  <div class="story" style="--c:#2FA35A">
+    <div class="who"><div class="e">👵</div><div class="n">어르신</div></div>
+    <div class="steps">
+      <div class="stp"><div class="e">📷</div><div class="t">카메라가<br>나이를 알아봐요</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">🔍</div><div class="t">글자가 <b>1.5배</b><br>커져요</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">😊</div><div class="t">혼자서<br>주문 끝!</div></div>
+    </div>
+  </div>
+
+  <div class="story" style="--c:#F28C38">
+    <div class="who"><div class="e">🦯</div><div class="n">눈이 불편한 분</div></div>
+    <div class="steps">
+      <div class="stp"><div class="e">🔊</div><div class="t">“눈이<br>불편하신가요?”</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">🙋</div><div class="t">“<b>네!</b>”<br>→ 고대비 화면</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">🎤</div><div class="t">말로 주문,<br>소리로 확인</div></div>
+    </div>
+  </div>
+
+  <div class="story" style="--c:#9B6CF0">
+    <div class="who"><div class="e">🌏</div><div class="n">외국인</div></div>
+    <div class="steps">
+      <div class="stp"><div class="e">🗣️</div><div class="t">“Two bulgogi<br>burgers!”</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">🌐</div><div class="t">화면이<br><b>영어</b>로</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">🍔</div><div class="t">불고기버거<br><b>2개</b> 담김</div></div>
+    </div>
+  </div>
+
+  <div class="story" style="--c:#4C8DF6">
+    <div class="who"><div class="e">🖐️</div><div class="n">손이 불편한 분</div></div>
+    <div class="steps">
+      <div class="stp"><div class="e">✋</div><div class="t">손바닥을<br>펴면</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">👆</div><div class="t">커서가<br>따라와요</div></div>
+      <div class="ar">→</div>
+      <div class="stp"><div class="e">⏱️</div><div class="t"><b>2초</b> 멈추면<br>선택!</div></div>
+    </div>
+  </div>
+  </div>
+
+  <div class="nums">
+    <div class="numc"><div class="big">13<small>/20</small></div><div class="d">20번 중 13번 같아야<br>화면이 바뀌어요</div></div>
+    <div class="numc"><div class="big">21<small>:1</small></div><div class="d">고대비 글자<br>명암 대비</div></div>
+    <div class="numc"><div class="big">99<small>/99</small></div><div class="d">자동 테스트<br>모두 통과</div></div>
+  </div>
+
+  <div class="end">
+    <div class="tag">웹캠 하나면, <span class="y">어느 키오스크든</span> 유니버셜하게</div>
+    <div class="lock">🔒 얼굴 사진은 저장하지 않아요 · 얼굴·손 인식은 컴퓨터 안에서만</div>
+  </div>
+</section>
+
+</body>
+</html>
