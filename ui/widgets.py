@@ -14,7 +14,7 @@ from PyQt6.QtCore import (Qt, QTimer, pyqtSignal, QPropertyAnimation, QPoint,
                           QRect, QSize)
 from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtWidgets import (QAbstractScrollArea, QDialog, QFrame, QHBoxLayout, QLabel,
-                             QLayout, QPushButton, QScroller, QScrollerProperties,
+                             QLayout, QProgressBar, QPushButton, QScroller, QScrollerProperties,
                              QSizePolicy, QVBoxLayout, QWidget,
                              QGraphicsOpacityEffect)
 
@@ -330,6 +330,65 @@ class Toast(QLabel):
         self._anim.start()
 
 
+class VoiceMeter(QFrame):
+    """음성 인식률(인식기가 들은 말에 매긴 신뢰도 0~100%)을 막대로 보여 줍니다.
+
+    손님이 말한 것이 얼마나 확실하게 인식됐는지 눈으로 볼 수 있게 합니다.
+    80% 이상은 초록, 50% 이상은 주황, 그보다 낮으면 빨강으로 칠합니다.
+    """
+
+    def __init__(self, title: str, waiting_text: str = "", parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        self.title = QLabel(title)
+        self.title.setStyleSheet("font-weight:800;")
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setTextVisible(True)
+        self.bar.setMinimumHeight(34)
+        row.addWidget(self.title)
+        row.addWidget(self.bar, 1)
+        self.heard = QLabel(waiting_text)
+        self.heard.setWordWrap(True)
+        lay.addLayout(row)
+        lay.addWidget(self.heard)
+        self._show(0, "—", "#9AA5B5")
+
+    def _show(self, value: int, text: str, color: str) -> None:
+        self.bar.setValue(value)
+        self.bar.setFormat(text)
+        self.bar.setStyleSheet(
+            "QProgressBar { border:2px solid #9AA5B5; border-radius:10px; background:#FFFFFF;"
+            " color:#1B2430; text-align:center; font-weight:800; }"
+            f"QProgressBar::chunk {{ background:{color}; border-radius:8px; }}")
+
+    def set_listening(self, text: str) -> None:
+        """새로 듣기 시작: 막대를 비우고 '듣는 중' 표시."""
+        self.heard.setText(text)
+        self._show(0, "…", "#9AA5B5")
+
+    def set_confidence(self, confidence: float) -> None:
+        """인식기가 매긴 신뢰도(0~1). 음수면 인식기가 신뢰도를 주지 않은 것('—')."""
+        if confidence < 0:
+            self._show(0, "—", "#9AA5B5")
+            return
+        value = round(max(0.0, min(1.0, confidence)) * 100)
+        color = "#2E9E4F" if value >= 80 else "#E08A00" if value >= 50 else "#D64545"
+        self._show(value, f"{value}%", color)
+
+    def set_heard(self, text: str) -> None:
+        self.heard.setText(text)
+
+    def set_failed(self, reason: str) -> None:
+        """못 들었거나 못 알아들음: 0% 와 이유."""
+        self.heard.setText("⚠ " + reason)
+        self._show(0, "0%", "#D64545")
+
+
 class ChoiceDialog(QDialog):
     """'네/아니요'를 묻는 큰 안내창.
 
@@ -341,7 +400,7 @@ class ChoiceDialog(QDialog):
     WIDTH = 900
 
     def __init__(self, title: str, text: str, yes_text: str, no_text: str,
-                 style: str = "", parent=None):
+                 style: str = "", parent=None, meter_title: str = "", meter_wait: str = ""):
         super().__init__(parent)
         self.setWindowTitle(title)
         lay = QVBoxLayout(self)
@@ -370,6 +429,10 @@ class ChoiceDialog(QDialog):
 
         lay.addWidget(head)
         lay.addWidget(body)
+        # 음성으로 대답을 받을 때: 음성 인식률 막대(meter_title 이 있을 때만)
+        self.voice_meter = VoiceMeter(meter_title, meter_wait) if meter_title else None
+        if self.voice_meter is not None:
+            lay.addWidget(self.voice_meter)
         lay.addSpacing(8)
         lay.addWidget(self.yes_btn)
         lay.addWidget(self.no_btn)

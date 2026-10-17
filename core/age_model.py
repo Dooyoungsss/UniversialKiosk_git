@@ -55,12 +55,19 @@ class AgeEstimator:
             proto = config.DATA_DIR / "models" / "age_deploy.prototxt"
             model = config.DATA_DIR / "models" / "age_net.caffemodel"
             if not (proto.exists() and model.exists()):
+                print("[나이인식] 나이 모델 파일이 없어 얼굴 비율 어림짐작으로 대신합니다"
+                      "(정확도가 낮아 어린이·성인을 노인으로 볼 수 있음).", flush=True)
                 return
             self.net = cv2.dnn.readNetFromCaffe(str(proto), str(model))
             self.available = True
-        except Exception:
+        except Exception as e:
             self.net = None
             self.available = False
+            # 조용히 넘어가면 원인을 알 수 없음(OpenCV 5 로 올라가 모델이 안 읽혀 실버 모드로
+            # 잘못 바뀌던 일이 있었음) → 콘솔에 분명히 알림
+            print(f"[나이인식] 나이 모델을 불러오지 못해 얼굴 비율 어림짐작으로 대신합니다 "
+                  f"({type(e).__name__}: {e}). OpenCV 5 는 이 모델(Caffe)을 읽지 못합니다 → "
+                  f'pip install "opencv-python<5" "opencv-contrib-python<5"', flush=True)
 
     def predict_group(self, frame_bgr, bbox) -> tuple[str | None, float]:
         """얼굴 영역(bbox=(x1,y1,x2,y2) 픽셀)을 보고 (그룹, 신뢰도)를 돌려줍니다.

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,6 +35,11 @@ config.VISION_ENABLED = False
 config.TTS_ENABLED = False
 import core.speech as _speech_mod
 _speech_mod.TTS_ENABLED = False
+# 엔진 전체(버거 6종·세트·음성으로 사이드·음료 주문)를 검증하도록 판매 메뉴 제한을 풉니다.
+# (대회용 판매 설정은 test_full.py 의 test_sale_config_* 에서 따로 검증)
+config.BURGERS_ON_SALE = None
+config.SET_MENU_ENABLED = True
+config.VOICE_ORDER_CATEGORIES = None
 
 from core import menu_data
 from core.mathutils import (euclidean_distance, cosine_similarity,
@@ -329,16 +335,22 @@ def test_nlu_chinese_menu_and_qty():
     assert m.drink_id == "drink_cola" and m.drink_size == "L"
 
 
-def test_voice_dialog_examples_all_parse():
-    # 음성 주문 창의 예시 문장(3개 언어)은 모두 메뉴를 담을 수 있어야 함
+def test_voice_dialog_has_no_example_buttons():
+    # 음성 주문 창에는 예시 문장 버튼이 없고(마이크·취소·주문 분석·결제하기만),
+    # 손을 좌우로 휘둘러도 입력칸에 예시가 채워지지 않아야 함
+    from PyQt6.QtWidgets import QPushButton
     from ui.voice_dialog import VoiceOrderDialog
-    for lang, exs in (("ko", VoiceOrderDialog.EXAMPLES_KO),
-                      ("en", VoiceOrderDialog.EXAMPLES_EN),
-                      ("zh", VoiceOrderDialog.EXAMPLES_ZH)):
-        for ex in exs:
-            r = parse_order(ex)
-            assert r.detected_language == lang, ex
-            assert any(it.item_id for it in r.intents), ex
+    _get_app()
+    d = VoiceOrderDialog("ko", "힌트", "듣는 중", None, speaker=None, auto_listen=False,
+                         on_text=lambda t: {}, can_checkout=lambda: True)
+    try:
+        buttons = d.findChildren(QPushButton)
+        assert len(buttons) == 4, [b.text() for b in buttons]
+        for name in ("swipe_left", "swipe_right"):
+            d.receive_gesture(name)
+        assert d.input.text() == ""
+    finally:
+        d.close()
 
 
 # ══════════════════════════════════════════════
@@ -416,6 +428,22 @@ def test_gesture_pinch():
     names = [gr.classify(hand)[0] for _ in range(config.FIST_HOLD_FRAMES)]
     assert names[0] == "pinch_hold"                         # 첫 프레임엔 확정 금지
     assert names[-1] == "pinch"
+
+
+def test_gesture_pinch_fires_once_per_pinch():
+    # 집게를 쥔 채로 있어도 클릭은 한 번만. 손을 폈다가 다시 집어야 다음 클릭(반복 담기 버그 방지)
+    gr = vision_mod.GestureRecognizer()
+    pinch = hand_with(False, True, False, False, False)
+    tip = pinch.landmark[8]
+    pinch.landmark[4].x, pinch.landmark[4].y = tip.x + 0.01, tip.y + 0.01
+    names = [gr.classify(pinch)[0] for _ in range(30)]          # 약 1.5초 동안 계속 집음
+    assert names.count("pinch") == 1, names
+    assert names[-1] == "pinch_hold"
+    opened = hand_with(True, True, True, True, True)
+    for _ in range(config.GESTURE_VOTE_WINDOW):                  # 손을 폄(다수결이 바뀔 만큼)
+        gr.classify(opened)
+    names2 = [gr.classify(pinch)[0] for _ in range(12)]          # 다시 집음
+    assert names2.count("pinch") == 1, names2
 
 
 def test_gesture_open_palm():
@@ -902,7 +930,9 @@ def test_voice_dialog_conversation():
     d._on_recognized("콜라 하나 주세요")
     assert calls == ["콜라 하나 주세요"] and d.isVisible()
     assert d.input.text() == "" and not d.checkout_requested
-    d._on_recognized("결제할게요")
+    d._on_recognized("결제할게요")                         # 바로 닫지 않고 '결제할까요?' 확인
+    assert d._confirming and d.isVisible() and not d.checkout_requested
+    d._on_recognized("네 / 내 || nay")                     # '네' → 결제 요청하고 닫힘
     assert d.checkout_requested and not d.isVisible()
 
 
@@ -983,6 +1013,635 @@ def test_gui_cart_scrollbar_hidden_but_scrolls():
         assert bar.value() > 0
     finally:
         w.close()
+
+
+def test_display_scale_fits_portrait_monitor():
+    # 세로 모니터 해상도에 맞춰 화면 전체 배율을 정함(실제 픽셀 기준, Windows 화면 배율과 무관)
+    import main as main_mod
+    keys = ("QT_SCALE_FACTOR", "QT_ENABLE_HIGHDPI_SCALING", "QT_FONT_DPI")
+    saved = {k: os.environ.get(k) for k in keys}
+    orig = main_mod._monitor_sizes
+
+    def scale_for(sizes, fullscreen=True):
+        os.environ.pop("QT_SCALE_FACTOR", None)
+        main_mod._monitor_sizes = lambda: sizes
+        main_mod._configure_display(1080, 1920, fullscreen)
+        return os.environ.get("QT_SCALE_FACTOR")
+
+    try:
+        land = (1920, 1080, 1920, 1032)
+        assert scale_for([land, (768, 1366, 768, 1318)]) == "0.711"     # 768×1366 세로 모니터
+        assert scale_for([land, (1080, 1920, 1080, 1872)]) is None      # 디자인과 같으면 1:1
+        assert float(scale_for([land, (1080, 1920, 1080, 1872)], fullscreen=False)) < 1.0
+        assert float(scale_for([land])) < 1.0                            # 세로 모니터 없음 → 미리보기
+        assert scale_for([]) is None                                     # 모니터 정보를 못 읽음
+    finally:
+        main_mod._monitor_sizes = orig
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_camera_falls_back_to_other_index():
+    # 설정한 카메라 번호가 없으면 영상이 나오는 다른 카메라를 씀(대회장에서 번호가 바뀌어도 동작)
+    class _Cap:
+        def __init__(self, idx, alive):
+            self.idx, self.alive, self.released = idx, alive, False
+
+        def isOpened(self):
+            return self.alive
+
+        def set(self, *a):
+            pass
+
+        def read(self):
+            return self.alive, None
+
+        def release(self):
+            self.released = True
+
+    class _Cv2:
+        CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT = 3, 4
+
+        def __init__(self, alive):
+            self.alive, self.opened = alive, []
+
+        def VideoCapture(self, idx):
+            cap = _Cap(idx, idx in self.alive)
+            self.opened.append(cap)
+            return cap
+
+    vt = vision_mod.VisionThread()
+    vt._running = True
+    want = vision_mod.CAMERA_INDEX
+    cv = _Cv2({want, 0})
+    assert vt._open_camera(cv).idx == want                    # 설정한 카메라가 있으면 그것
+    other = next(i for i in range(4) if i != want)
+    cv = _Cv2({other})
+    cap = vt._open_camera(cv)
+    assert cap.idx == other                                     # 없으면 다른 번호로 대체
+    assert all(c.released for c in cv.opened if c is not cap)   # 실패한 카메라는 닫음
+    assert vt._open_camera(_Cv2(set())) is None                 # 카메라가 하나도 없음
+    vt._running = False
+    assert vt._open_camera(_Cv2({want})) is None                # 종료 중이면 바로 멈춤
+
+
+def test_gui_intro_asked_again_after_checkout_on_gesture():
+    # 결제 후 첫 화면으로 돌아온 뒤 손동작이 보이면 시각장애인 안내를 다시 물어야 함(한 번만)
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    asked = []
+    w._maybe_intro_accessibility = lambda: asked.append(w.stack.currentIndex())
+    try:
+        w._go_menu()
+        w._add_to_cart(menu_data.MENU[0])
+        w._checkout()
+        assert w.stack.currentIndex() == DONE
+        w._on_gesture("open_palm", 0.5, 0.5)            # 결제 완료 화면에서는 묻지 않음
+        w._reset_session()                              # 3.5초 뒤 첫 화면으로
+        assert w.stack.currentIndex() == WEL
+        w._on_gesture("open_palm", 0.5, 0.5)            # 손동작 인식 → 다시 물음
+        w._on_gesture("pinch", 0.5, 0.5)
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            app.processEvents()
+        assert asked == [WEL], asked
+        w._on_gesture("open_palm", 0.5, 0.5)            # 이미 물었으면 또 묻지 않음
+        w._reset_session()                              # 결제 없이 처음 화면(시간 초과)으로는 준비 안 함
+        w._on_gesture("open_palm", 0.5, 0.5)
+        for _ in range(5):
+            app.processEvents()
+        assert asked == [WEL], asked
+        w._on_customer_left()                           # 손님이 떠나면 새 손님에게는 얼굴로 다시 물음
+        assert w._intro_shown is False
+    finally:
+        w.close()
+
+
+def test_speaker_output_by_name():
+    # 음성 안내는 SPEAKER_NAME 스피커로. 없으면 기본 스피커, 다시 연결되면 다시 그 스피커로
+    import types
+
+    class _Tok:
+        def __init__(self, desc):
+            self.desc = desc
+
+        def GetDescription(self):
+            return self.desc
+
+    class _Tts:
+        def __init__(self, names):
+            self.AudioOutput = None
+            self.set_names(names)
+
+        def set_names(self, names):
+            toks = [_Tok(n) for n in names]
+            self._outs = types.SimpleNamespace(Count=len(toks), Item=lambda i: toks[i])
+
+        def GetAudioOutputs(self):
+            return self._outs
+
+    orig = getattr(config, "SPEAKER_NAME", "")
+    config.SPEAKER_NAME = "BS-05"
+    try:
+        sp = _speech_mod.Speaker()
+        tts = _Tts(["머리에 거는 수화기(BS-05 Hands-Free)", "헤드폰(BS-05)", "스피커(Realtek(R) Audio)"])
+        eng = tts
+        sp._select_output(eng)
+        assert tts.AudioOutput.GetDescription() == "헤드폰(BS-05)"    # 핸즈프리 말고 헤드폰
+        tts.set_names(["스피커(Realtek(R) Audio)"])                    # 블루투스 끊김
+        sp._select_output(eng)
+        assert tts.AudioOutput is None                                  # 기본 스피커
+        tts.set_names(["헤드폰(BS-05)", "스피커(Realtek(R) Audio)"])  # 다시 연결
+        sp._select_output(eng)
+        assert tts.AudioOutput.GetDescription() == "헤드폰(BS-05)"
+        config.SPEAKER_NAME = ""                                        # 지정 안 함 → 건드리지 않음
+        tts2 = _Tts(["헤드폰(BS-05)"])
+        _speech_mod.Speaker()._select_output(tts2)
+        assert tts2.AudioOutput is None
+    finally:
+        config.SPEAKER_NAME = orig
+
+
+def test_gui_intro_on_gesture_without_face():
+    # 얼굴이 카메라에 안 잡혀도 첫 화면에서 손동작이 보이면 시각장애인 안내를 물어야 함(한 번만)
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    asked = []
+    w._maybe_intro_accessibility = lambda: asked.append(w.stack.currentIndex())
+    try:
+        assert w.stack.currentIndex() == WEL and not w._intro_shown
+        w._on_gesture("open_palm", 0.5, 0.5)
+        w._on_gesture("open_palm", 0.5, 0.5)
+        for _ in range(5):
+            app.processEvents()
+        assert asked == [WEL], asked
+        w._on_face_present(True)                         # 얼굴이 나중에 잡혀도 또 묻지 않음
+        for _ in range(5):
+            app.processEvents()
+        assert asked == [WEL], asked
+    finally:
+        w.close()
+
+
+def test_gui_mode_back_to_standard_after_checkout():
+    # 결제를 마치고 첫 화면으로 돌아오면 화면 모드가 일반으로 돌아가야 함(시간 초과 복귀는 그대로)
+    w, (WEL, MENU, DONE) = _make_window()
+    try:
+        for mode in (config.MODE_HIGH_CONTRAST, config.MODE_SILVER, config.MODE_CHILD):
+            w._set_mode(mode)
+            w._go_menu()
+            w._add_to_cart(menu_data.MENU[0])
+            w._checkout()
+            assert w.mode == mode                       # 결제 완료 화면에서는 그대로
+            w._reset_session()                          # 3.5초 뒤 첫 화면으로
+            assert w.mode == config.MODE_STANDARD, mode
+            assert not w._auto_mode_locked
+        w._set_mode(config.MODE_SILVER)
+        w._reset_session()                              # 결제 없이 시간 초과로 처음 화면
+        assert w.mode == config.MODE_SILVER
+    finally:
+        w.close()
+
+
+def test_gui_intro_buttons_dwell_and_pinch():
+    # 시각장애인 안내창: '네'·'아니요' 버튼 모두 드웰·집게로 누를 수 있고,
+    # 빈 곳을 집었을 때는 '네'로 보지 않음(손을 들고 있다가 실수로 넘어가지 않게)
+    from ui.widgets import ChoiceDialog
+    w, (WEL, MENU, DONE) = _make_window()
+    app = _get_app()
+    try:
+        box = ChoiceDialog("t", "q", "네", "아니요", parent=w)
+        box.no_default_yes = True
+        clicks = []
+        box.yes_btn.clicked.connect(lambda: clicks.append("yes"))
+        box.no_btn.clicked.connect(lambda: clicks.append("no"))
+
+        def reopen():
+            box.show()
+            for _ in range(3):
+                app.processEvents()
+            w._active_dialog = box
+
+        def norm(btn):
+            c = btn.mapTo(box, btn.rect().center())
+            return c.x() / box.width(), c.y() / box.height()
+
+        reopen()
+        assert w._dialog_button_under_cursor(*norm(box.yes_btn)) is box.yes_btn   # 드웰 대상
+        assert w._dialog_button_under_cursor(*norm(box.no_btn)) is box.no_btn
+        w._cursor_nx, w._cursor_ny = 0.01, 0.01
+        w._handle_dialog_gesture("pinch")                     # 빈 곳 집게 → 아무것도 안 눌림
+        assert clicks == [], clicks
+        w._cursor_nx, w._cursor_ny = norm(box.yes_btn)
+        w._handle_dialog_gesture("pinch")                     # '네' 위에서 집게
+        assert clicks == ["yes"], clicks
+        reopen()
+        w._cursor_nx, w._cursor_ny = norm(box.no_btn)
+        w._handle_dialog_gesture("pinch")                     # '아니요' 위에서 집게
+        assert clicks == ["yes", "no"], clicks
+        reopen()
+        nx, ny = norm(box.yes_btn)                            # '네' 위에 2초 머물기(드웰)
+        w._update_dialog_dwell(nx, ny)
+        w._dialog_dwell_start_ms -= config.DWELL_SELECT_MS + 10
+        w._last_gesture_action_ms = 0.0
+        w._update_dialog_dwell(nx, ny)
+        assert clicks == ["yes", "no", "yes"], clicks
+    finally:
+        w._active_dialog = None
+        w.close()
+
+
+def test_yesno_any_language_first():
+    # 짧은 대답은 여러 언어로 인식한 결과를 앞쪽부터 봄 → 화면이 영어여도 한국어 '네'를 알아들음
+    from core.yesno import yes_no_answer, first_transcript
+    assert yes_no_answer("nay / neigh || 네 / 내 || 呢") is True
+    assert yes_no_answer("Annie || 아니요") is False
+    assert yes_no_answer("yes || 예스") is True
+    assert yes_no_answer("hello || 안녕하세요") is None
+    assert first_transcript("네 / 내 || nay") == "네"
+    from ui.main_window import KioskMainWindow as K
+    assert K._intro_answer("nay || 네") is True                # 안내창도 같은 판별 사용
+
+
+def test_josa():
+    from core.i18n import josa
+    assert josa("콜라") == "가" and josa("감자튀김") == "이"
+    assert josa("불고기버거 세트") == "가" and josa("콜라 2개") == "가"
+    assert josa("콜라", "을/를") == "를" and josa("치즈스틱", "을/를") == "을"
+    assert josa("버거 3") == "이" and josa("버거 2") == "가"
+
+
+def test_nlu_remove_and_show_cart():
+    from core.nlu import parse_order
+    def acts(t):
+        return [(i.action, i.item_id, i.qty, i.is_set) for i in parse_order(t).intents]
+    assert acts("콜라 빼줘") == [("remove", "drink_cola", 0, False)]          # 0 = 모두
+    assert acts("콜라 하나 빼 주세요") == [("remove", "drink_cola", 1, False)]
+    assert acts("불고기버거 세트 빼줘") == [("remove", "burger_bulgogi", 0, True)]
+    assert acts("감자튀김 취소해줘") == [("remove", "side_fries", 0, False)]  # 전체 비우기가 아님
+    assert acts("remove the coke")[0][:2] == ("remove", "drink_cola")
+    assert acts("去掉可乐")[0][:2] == ("remove", "drink_cola")
+    assert acts("주문 취소")[0][0] == "clear"
+    assert acts("피클 빼고 불고기버거 주세요") == [("add", "burger_bulgogi", 1, False)]
+    for t in ("고른 메뉴 보여줘", "내가 뭐 담았어?", "장바구니 보여줘", "what is in my cart", "我点了什么"):
+        assert acts(t) == [("show_cart", None, 1, False)], t
+    assert acts("장바구니에 콜라 담아줘")[0][:2] == ("add", "drink_cola")
+
+
+def test_cart_remove_item():
+    c = Cart()
+    burger = menu_data.get_item("burger_bulgogi")
+    cola = menu_data.get_item("drink_cola")
+    c.add(burger, qty=1, is_set=True)
+    c.add(burger, qty=2)
+    c.add(cola, qty=3)
+    assert c.remove_item("drink_cola", 1) == 1 and c.item_count() == 5
+    assert c.remove_item("burger_bulgogi", 0, True) == 1          # 세트만
+    assert c.item_count() == 4
+    assert c.remove_item("burger_bulgogi") == 2                   # 남은 단품 모두
+    assert c.remove_item("side_fries") == 0
+    assert [l.item.item_id for l in c.lines] == ["drink_cola"]
+
+
+def test_gui_voice_remove_show_and_confirm():
+    # 음성: '콜라 빼줘' → 빼고 안내, '고른 메뉴 보여줘' → 담은 메뉴·합계, '결제' → 확인 문장
+    w, (WEL, MENU, DONE) = _make_window()
+    said = []
+    try:
+        w.speaker.say = said.append
+        w.tr.set_lang("ko")
+        w._go_menu()
+        w._voice_text("불고기버거 하나랑 콜라 두 개 주세요")
+        assert said[-1].startswith("불고기버거 1개, 콜라 2개가 담겼습니다."), said
+        res = w._voice_text("콜라 하나 빼줘")
+        assert res["understood"] and "콜라 1개를 뺐습니다." in said[-1], said
+        assert w.cart.item_count() == 2
+        w._voice_text("고른 메뉴 보여줘")
+        total = f"{w.cart.total():,}"
+        assert "담으신 메뉴는 불고기버거 1개, 콜라 1개입니다." in said[-1] and total in said[-1], said
+        w._voice_text("감자튀김 빼줘")
+        assert "장바구니에 감자튀김이 없어요." in said[-1], said
+        res = w._voice_text("결제해줘")
+        assert res["checkout"] and "결제할까요?" in res["confirm"]
+        assert "불고기버거 1개, 콜라 1개" in res["confirm"] and w.stack.currentIndex() == MENU
+    finally:
+        w.close()
+
+
+def test_gui_added_and_paid_are_spoken():
+    # 화면으로 담으면 "○○이/가 담겼습니다.", 결제가 끝나면 "결제가 완료되었습니다."
+    w, (WEL, MENU, DONE) = _make_window()
+    said = []
+    try:
+        w.speaker.say = said.append
+        w.tr.set_lang("ko")
+        w._go_menu()
+        w._add_to_cart(menu_data.get_item("side_fries"))
+        assert said[-1] == "감자튀김이 담겼습니다.", said
+        w._add_to_cart(menu_data.get_item("drink_cola"))
+        assert said[-1] == "콜라가 담겼습니다.", said
+        w._checkout()
+        assert said[-1].startswith("결제가 완료되었습니다."), said
+        n = w._order_counter
+        assert f"주문 번호는 {n}번" not in said[-1]                 # 숫자 그대로 읽지 않음
+        from core.i18n import korean_number
+        assert f"주문 번호는 {korean_number(n)}번입니다." in said[-1], said
+    finally:
+        w.close()
+
+
+def test_voice_dialog_checkout_confirm_flow():
+    # '결제' → '결제할까요?' → '아니요'면 기다림 → 다시 '결제'라고 하면 또 물어봄 → '네'면 결제
+    from ui.voice_dialog import VoiceOrderDialog
+    _get_app()
+
+    def on_text(t):
+        return {"added": 0, "checkout": "결제" in t, "understood": True, "message": "",
+                "lang": "ko", "confirm": "담으신 메뉴는 콜라 1개입니다. 결제할까요?"}
+
+    d = VoiceOrderDialog("ko", "힌트", "듣는 중", None, speaker=None, auto_listen=False,
+                         on_text=on_text, can_checkout=lambda: True)
+    d.show()
+    d._on_recognized("결제해줘")
+    assert d._confirming and "결제할까요?" in d.status_label.text()
+    d._on_recognized("아니요 || no")                        # 아니요 → 기다림
+    assert not d._confirming and d.isVisible() and not d.checkout_requested
+    d._on_recognized("결제할게요")                          # 다시 결제 → 또 물어봄
+    assert d._confirming
+    d._on_recognized("음 || um")                            # 네/아니요가 아니면 다시 물음
+    assert d._confirming and d.isVisible()
+    d._on_recognized("네 || yes")
+    assert d.checkout_requested and not d.isVisible()
+
+
+def test_boost_quiet_audio():
+    # 작은 녹음 소리는 키우고(최대 20배), 이미 큰 소리는 그대로 둠
+    import speech_recognition as sr
+    from ui.voice_dialog import boost_quiet_audio
+    quiet = (np.sin(np.linspace(0, 200, 16000)) * 300).astype(np.int16)
+    out = boost_quiet_audio(sr, sr.AudioData(quiet.tobytes(), 16000, 2))
+    big = np.frombuffer(out.frame_data, dtype=np.int16)
+    assert 300 * 19 < np.abs(big).max() <= 32767                # 약 20배
+    loud = (np.sin(np.linspace(0, 200, 16000)) * 30000).astype(np.int16)
+    same = boost_quiet_audio(sr, sr.AudioData(loud.tobytes(), 16000, 2))
+    assert same.frame_data == loud.tobytes()
+
+
+def test_gui_mode_change_is_not_spoken():
+    # 모드가 바뀌어도 "일반 모드입니다" 같은 음성 안내는 하지 않음(화면 알림만)
+    w, (WEL, MENU, DONE) = _make_window()
+    said = []
+    try:
+        w.speaker.say = said.append
+        for mode in (config.MODE_SILVER, config.MODE_CHILD, config.MODE_HIGH_CONTRAST,
+                     config.MODE_STANDARD):
+            w._set_mode(mode, announce=True)
+            assert w.mode == mode
+        assert said == [], said
+    finally:
+        w.close()
+
+
+def test_korean_number_reading():
+    # 주문 번호는 한자어 수로 읽음(1002 → 천이). '1002번'은 '천 두 번'으로 잘못 읽힘
+    from core.i18n import korean_number
+    cases = {1: "일", 10: "십", 11: "십일", 1002: "천이", 1010: "천십", 1234: "천이백삼십사",
+             10000: "만", 21000: "이만 천", 105000: "십만 오천"}
+    for n, want in cases.items():
+        assert korean_number(n) == want, (n, korean_number(n))
+
+
+class _SaleConfig:
+    """대회용 판매 설정(버거 2종·세트 없음·음성은 버거만)으로 잠시 바꿨다가 되돌림."""
+
+    def __enter__(self):
+        self.saved = (config.BURGERS_ON_SALE, config.SET_MENU_ENABLED, config.VOICE_ORDER_CATEGORIES)
+        config.BURGERS_ON_SALE = ("burger_chicken", "burger_hanwoo")
+        config.SET_MENU_ENABLED = False
+        config.VOICE_ORDER_CATEGORIES = ("burger",)
+        menu_data.reload_menu()
+
+    def __exit__(self, *exc):
+        (config.BURGERS_ON_SALE, config.SET_MENU_ENABLED, config.VOICE_ORDER_CATEGORIES) = self.saved
+        menu_data.reload_menu()
+
+
+def test_sale_config_menu_only_two_burgers_no_set():
+    # 대회용: 버거는 치킨·한우 2종만, 세트 버튼 없음, 사이드·음료는 화면에 그대로
+    with _SaleConfig():
+        assert [m.item_id for m in menu_data.items_in_category(menu_data.CATEGORY_BURGER)] == \
+            ["burger_chicken", "burger_hanwoo"]
+        assert menu_data.get_item("burger_bulgogi") is None
+        assert menu_data.items_in_category(menu_data.CATEGORY_SIDE)
+        assert menu_data.items_in_category(menu_data.CATEGORY_DRINK)
+        assert menu_data.voice_menu_names("ko") == ["치킨버거", "한우버거"]
+        w, (WEL, MENU, DONE) = _make_window()
+        try:
+            w._go_menu()
+            ids = [w.menu_grid.itemAt(i).widget().item.item_id for i in range(w.menu_grid.count())]
+            assert ids == ["burger_chicken", "burger_hanwoo"], ids
+            assert w.set_toggle.isHidden()
+            w.set_mode_on = True                                 # 혹시 켜져 있어도
+            w._add_to_cart(menu_data.get_item("burger_chicken"))
+            assert not w.cart.lines[0].is_set                    # 세트로 담기지 않음
+            w._add_to_cart(menu_data.get_item("drink_cola"))     # 화면으로는 음료도 담김
+            assert w.cart.item_count() == 2
+        finally:
+            w.close()
+    assert menu_data.get_item("burger_bulgogi") is not None      # 설정을 되돌리면 6종
+
+
+def test_sale_config_voice_orders_burgers_only():
+    # 대회용 음성 주문: 버거만 담고, 사이드·음료는 화면에서 고르라고 안내, '세트'는 단품으로
+    with _SaleConfig():
+        w, (WEL, MENU, DONE) = _make_window()
+        said = []
+        try:
+            w.speaker.say = said.append
+            w.tr.set_lang("ko")
+            w._go_menu()
+            res = w._voice_text("콜라 주세요")
+            assert res["added"] == 0 and res["understood"] and w.cart.is_empty()
+            assert "화면에서 골라 주세요" in said[-1], said
+            res = w._voice_text("치킨버거 하나랑 감자튀김 주세요")
+            assert res["added"] == 1 and [l.item.item_id for l in w.cart.lines] == ["burger_chicken"]
+            assert "치킨버거 1개가 담겼습니다." in said[-1] and "화면에서 골라 주세요" in said[-1]
+            w._voice_text("한우버거 세트 두 개 주세요")
+            line = w.cart.lines[-1]
+            assert line.item.item_id == "burger_hanwoo" and line.qty == 2 and not line.is_set
+            assert "세트 메뉴는 없어서" in said[-1], said
+            w._voice_text("불고기버거 주세요")                    # 판매하지 않는 버거
+            assert w.cart.item_count() == 3
+            for lang in ("ko", "en", "zh"):                     # 창 위쪽 안내 예시도 판매 버거만
+                hint = TEXTS[lang]["voice_hint"]
+                ids = {i.item_id for i in parse_order(hint).intents}
+                assert ids and ids <= {"burger_chicken", "burger_hanwoo"}, hint
+        finally:
+            w.close()
+
+
+def test_speaker_say_now_drops_backlog():
+    # 메뉴를 빠르게 여러 번 담아도 안내가 쌓이지 않음: say_now 는 밀린 안내를 버리고 바로 읽음
+    import threading
+    sp = _speech_mod.Speaker()                     # 테스트에서는 소리를 끈 상태로 만들어짐
+    sp.enabled = True                              # 대기열 동작만 확인(실제 소리 없음)
+    for i in range(5):
+        sp.say(f"안내 {i}")
+    assert list(sp._items) == [f"안내 {i}" for i in range(5)] and sp.is_speaking()
+    sp.say_now("콜라가 담겼습니다.")
+    assert list(sp._items) == ["콜라가 담겼습니다."]   # 밀린 안내는 버리고 새 안내만
+    sp._busy = True                                # 읽는 중에 새 안내가 오면 읽던 것도 멈춤 요청
+    sp.say_now("감자튀김이 담겼습니다.")
+    assert sp._interrupt.is_set() and list(sp._items) == ["감자튀김이 담겼습니다."]
+    sp.stop()
+    sp._busy = False
+    assert not sp.is_speaking()
+    sp.enabled = False
+    sp.say("꺼져 있으면 무시")
+    assert not sp._items
+
+
+def test_recognizer_listens_to_the_end():
+    # 말 사이에 잠깐 쉬어도(1.5초까지) 끊지 않고, 한 번에 15초까지 들음
+    import speech_recognition as sr
+    from ui.voice_dialog import make_recognizer
+    r = make_recognizer(sr)
+    assert r.pause_threshold == config.VOICE_PAUSE_S >= 1.5
+    assert r.non_speaking_duration <= r.pause_threshold
+    assert config.VOICE_MAX_PHRASE_S >= 15 and config.SHORT_ANSWER_LISTEN_S >= 4
+
+
+def test_voice_meter_shows_recognition_rate():
+    # 음성 인식률 막대: 신뢰도를 %로, 높으면 초록·낮으면 빨강, 실패하면 0%
+    from ui.widgets import VoiceMeter, ChoiceDialog
+    _get_app()
+    m = VoiceMeter("🎙 음성 인식률", "대기")
+    assert m.bar.value() == 0 and m.bar.format() == "—"
+    m.set_confidence(0.87)
+    assert m.bar.value() == 87 and m.bar.format() == "87%" and "#2E9E4F" in m.bar.styleSheet()
+    m.set_confidence(0.32)
+    assert m.bar.value() == 32 and "#D64545" in m.bar.styleSheet()
+    m.set_confidence(-1)
+    assert m.bar.format() == "—"
+    m.set_failed("못 들었어요")
+    assert m.bar.value() == 0 and "못 들었어요" in m.heard.text()
+    assert ChoiceDialog("t", "q", "네", "아니요").voice_meter is None          # 막대 없는 창
+    box = ChoiceDialog("t", "q", "네", "아니요", meter_title="🎙 음성 인식률")
+    assert box.voice_meter is not None
+
+
+def test_speech_worker_emits_confidence():
+    # 인식기가 매긴 신뢰도를 막대로 보내야 함(짧은 대답은 가장 높은 언어, 주문은 고른 결과)
+    from ui import voice_dialog as vd
+
+    class _Sr:
+        class UnknownValueError(Exception):
+            pass
+
+        class RequestError(Exception):
+            pass
+
+    answers = {"ko-KR": ("네", 0.93), "en-US": ("nay", 0.41), "zh-CN": ("呢", 0.2)}
+
+    class _Rec:
+        def recognize_google(self, audio, language=None, show_all=False):
+            text, conf = answers[language]
+            return {"alternative": [{"transcript": text, "confidence": conf}], "final": True}
+
+    got, conf = [], []
+    w = vd.SpeechWorker("ko", short_answer=True)
+    w.recognized.connect(got.append)
+    w.confidence.connect(conf.append)
+    w._recognize_short(_Sr, _Rec(), object())
+    assert conf == [0.93] and got and got[0].startswith("네")
+    answers.update({"ko-KR": ("한우버거 두 개 주세요", 0.88)})
+    got.clear(); conf.clear()
+    w2 = vd.SpeechWorker("ko")
+    w2.recognized.connect(got.append)
+    w2.confidence.connect(conf.append)
+    w2._recognize_order(_Sr, _Rec(), object())
+    assert got == ["한우버거 두 개 주세요"] and conf == [0.88]
+
+
+def test_voice_dialog_meter_updates():
+    from ui.voice_dialog import VoiceOrderDialog
+    _get_app()
+    d = VoiceOrderDialog("ko", "힌트", "듣는 중", None, speaker=None, auto_listen=False,
+                         on_text=lambda t: {"understood": True, "lang": "ko"},
+                         can_checkout=lambda: True)
+    try:
+        d.voice_meter.set_confidence(0.9)
+        d._on_recognized("치킨버거 하나 주세요")
+        assert "치킨버거 하나 주세요" in d.voice_meter.heard.text()
+        d._on_failed("말씀이 들리지 않았어요")
+        assert d.voice_meter.bar.value() == 0
+    finally:
+        d.close()
+
+
+def test_beep_before_listening_and_korean_first():
+    # 마이크를 켜기 전에 '삐' 소리, 짧은 대답은 한국어 결과를 먼저(영어 'nah'를 '아니요'로 보지 않음)
+    from core.yesno import yes_no_answer
+    from ui import voice_dialog as vd
+    assert yes_no_answer("nah / nay || 네") is True
+    assert yes_no_answer("no || 노") is False
+    sp = _speech_mod.Speaker()
+    sp.enabled = True                              # 대기열 동작만 확인(실제 소리 없음)
+    sp.beep()
+    assert list(sp._items) == [_speech_mod._BEEP] and sp.is_speaking()
+    sp.stop()
+
+    class _Sr:
+        class UnknownValueError(Exception):
+            pass
+
+        class RequestError(Exception):
+            pass
+
+    asked = []
+
+    class _Rec:
+        def recognize_google(self, audio, language=None, show_all=False):
+            asked.append(language)
+            return {"ko-KR": {"alternative": [{"transcript": "네", "confidence": 0.9}]},
+                    "en-US": {"alternative": [{"transcript": "nah", "confidence": 0.8}]},
+                    "zh-CN": []}[language]
+
+    got = []
+    w = vd.SpeechWorker("en", short_answer=True)    # 화면이 영어여도
+    w.recognized.connect(got.append)
+    w._recognize_short(_Sr, _Rec(), object())
+    assert got and got[0].startswith("네 || nah"), got     # 한국어 결과가 먼저
+    assert yes_no_answer(got[0]) is True
+    import os as _os
+    assert _os.path.getsize(_speech_mod._beep_wav()) > 1000
+
+
+def test_run_when_quiet_skips_when_closed():
+    # 기다리는 사이 창이 닫히면 삐 소리도 내지 않고 듣기도 시작하지 않음
+    from ui.voice_dialog import run_when_quiet
+    app = _get_app()
+
+    class _Sp:
+        enabled = True
+        beeps = 0
+
+        def is_speaking(self):
+            return False
+
+        def beep(self):
+            self.beeps += 1
+
+    sp, called = _Sp(), []
+    run_when_quiet(sp, lambda: called.append(1), beep=True, active=lambda: False)
+    run_when_quiet(sp, lambda: called.append(2), beep=True, active=lambda: True)
+    deadline = time.time() + 1.5
+    while time.time() < deadline:
+        app.processEvents()
+    assert called == [2] and sp.beeps == 1
 
 
 def test_aim_map_elastic():

@@ -17,6 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
+import config
+# 엔진 전체(버거 6종·세트·음성으로 사이드·음료 주문)를 검증하도록 판매 메뉴 제한을 풉니다.
+# (대회용 판매 설정은 test_full.py 의 test_sale_config_* 에서 따로 검증)
+config.BURGERS_ON_SALE = None
+config.SET_MENU_ENABLED = True
+config.VOICE_ORDER_CATEGORIES = None
+
 from core import menu_data
 from core.mathutils import (euclidean_distance, cosine_similarity,
                             MovingAverageFilter, normalize_vector)

@@ -125,8 +125,30 @@ class GestureRecognizer:
         self._last_y: float | None = None
         self._vtrack: deque = deque()               # 위/아래 스와이프 판정용 (시각, x, y) 기록
         self._last_swipe_t = 0.0
-        self._fist_frames = 0
-        self._signyes_frames = 0
+        # 쥐는 손 모양(집게·주먹·엄지척) 확정 상태: 같은 모양을 계속 쥐고 있으면 한 번만 확정
+        self._pose_kind: str | None = None
+        self._pose_frames = 0
+        self._pose_fired = False
+
+    _HOLD_NAMES = {"pinch": "pinch_hold", "fist": "fist_hold", "sign_yes": "sign_hold"}
+
+    def _held_pose(self, kind: str, x: float, y: float):
+        """쥐는 손 모양을 FIST_HOLD_FRAMES 동안 유지하면 '한 번만' 확정합니다.
+
+        계속 쥐고 있으면 '…_hold'(유지 중)만 보내고, 손을 폈다가 다시 쥐어야 다음 확정이 됩니다.
+        (예전에는 쥔 채로 있으면 6프레임마다 다시 확정돼 + 버튼·메뉴가 여러 번 눌렸음)
+        """
+        if self._pose_kind != kind:                 # 다른 손 모양으로 바뀜 → 처음부터 셈
+            self._pose_kind, self._pose_frames, self._pose_fired = kind, 0, False
+        self._pose_frames += 1
+        if not self._pose_fired and self._pose_frames >= FIST_HOLD_FRAMES:
+            self._pose_fired = True
+            return kind, (x, y)
+        return self._HOLD_NAMES[kind], (x, y)
+
+    def _release_pose(self) -> None:
+        """쥐던 손을 폈음 → 다음에 쥐면 다시 확정할 수 있게."""
+        self._pose_kind, self._pose_frames, self._pose_fired = None, 0, False
 
     @staticmethod
     def _dist(a, b) -> float:
@@ -217,16 +239,11 @@ class GestureRecognizer:
         if pinch:
             self._last_x = self._last_y = None
             self._vtrack.clear()
-            self._signyes_frames = 0
-            self._fist_frames += 1
-            if self._fist_frames >= FIST_HOLD_FRAMES:
-                self._fist_frames = 0
-                return "pinch", (tip_x, tip_y)
-            return "pinch_hold", (tip_x, tip_y)
+            return self._held_pose("pinch", tip_x, tip_y)
 
         # 1) 검지만 펴짐 → 포인팅(커서 이동). 가리키기 우선.
         if index and not middle and not ring and not pinky:
-            self._fist_frames = 0
+            self._release_pose()
             self._last_x = self._last_y = None
             self._vtrack.clear()
             # 에임(커서)은 손바닥 중심이 더 안정적. 정밀 포인팅이 필요하면 손끝 사용.
@@ -240,20 +257,9 @@ class GestureRecognizer:
             self._last_x = self._last_y = None
             self._vtrack.clear()
             if thumb:
-                self._fist_frames = 0
-                self._signyes_frames += 1
-                if self._signyes_frames >= FIST_HOLD_FRAMES:
-                    self._signyes_frames = 0
-                    return "sign_yes", (palm_x, palm_y)
-                return "sign_hold", (palm_x, palm_y)
-            self._signyes_frames = 0
-            self._fist_frames += 1
-            if self._fist_frames >= FIST_HOLD_FRAMES:
-                self._fist_frames = 0
-                return "fist", (palm_x, palm_y)
-            return "fist_hold", (palm_x, palm_y)
-        self._fist_frames = 0
-        self._signyes_frames = 0
+                return self._held_pose("sign_yes", palm_x, palm_y)
+            return self._held_pose("fist", palm_x, palm_y)
+        self._release_pose()
 
         # 3) 검지+중지만 → V(둘)
         if index and middle and not ring and not pinky:
@@ -299,6 +305,10 @@ class GestureRecognizer:
         self._last_x, self._last_y = x, y
         self._vtrack.clear()
         return name, (x, y)
+
+
+# 연속으로 영상을 못 읽으면(약 1초) 카메라가 빠진 것으로 보고 재연결을 기다림
+CAMERA_LOST_FRAMES = 30
 
 
 # ──────────────────────────────────────────────
@@ -347,12 +357,13 @@ if _QT:
                     self.status.emit("vision_demo_no_mediapipe")
                     return
 
-            cap = cv2.VideoCapture(CAMERA_INDEX)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-            if not cap.isOpened():
+            cap = self._open_camera(cv2)
+            if cap is None:
+                # 카메라가 없으면 데모 모드로 표시하고, 나중에 꽂으면 바로 잡히도록 계속 찾음
                 self.status.emit("vision_demo_no_camera")
-                return
+                cap = self._wait_for_camera(cv2)
+                if cap is None:
+                    return
 
             # 모델 초기화도 실패할 수 있으므로 보호합니다.
             try:
@@ -374,11 +385,30 @@ if _QT:
 
             last_face_state = False
             frame_idx = 0
+            read_fails = 0
             try:
                 while self._running:
                     ok, frame = cap.read()
                     if not ok:
+                        # 예전에는 실패해도 바로 다시 읽어 CPU 를 100% 쓰며 헛돌았고,
+                        # USB 카메라가 빠졌다 다시 꽂혀도 복구되지 않았음
+                        read_fails += 1
+                        if read_fails < CAMERA_LOST_FRAMES:
+                            self.msleep(30)
+                            continue
+                        print("[카메라] 영상이 끊겼습니다. 다시 연결을 기다립니다.", flush=True)
+                        cap.release()
+                        if last_face_state:
+                            self.face_present.emit(False)
+                            last_face_state = False
+                        self.status.emit("vision_camera_lost")
+                        cap = self._wait_for_camera(cv2)
+                        if cap is None:
+                            break
+                        read_fails = 0
+                        self.status.emit("vision_running")
                         continue
+                    read_fails = 0
                     frame = cv2.flip(frame, 1)        # 거울처럼 좌우 반전
                     frame_idx += 1
 
@@ -430,13 +460,50 @@ if _QT:
             except Exception:
                 self.status.emit("vision_interrupted")
             finally:
-                cap.release()
+                if cap is not None:
+                    cap.release()
                 try:
                     mp_face.close()
                     mp_hands.close()
                 except Exception:
                     pass
                 self.status.emit("vision_stopped")
+
+        def _open_camera(self, cv2):
+            """설정한 카메라(CAMERA_INDEX)를 열고, 없으면 다른 번호(0~3)를 차례로 시도.
+
+            대회장·다른 컴퓨터에서는 카메라 번호 순서가 달라질 수 있어, 설정 번호가 없다고
+            바로 데모 모드가 되지 않게 합니다. 실제로 영상이 나오는 카메라만 씁니다.
+            """
+            order = [CAMERA_INDEX] + [i for i in range(4) if i != CAMERA_INDEX]
+            for idx in order:
+                if not self._running:
+                    return None
+                cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+                    ok, _ = cap.read()
+                    if ok:
+                        if idx != CAMERA_INDEX:
+                            print(f"[카메라] 설정한 {CAMERA_INDEX}번 카메라가 없어 "
+                                  f"{idx}번 카메라를 사용합니다.", flush=True)
+                        return cap
+                cap.release()
+            return None
+
+        def _wait_for_camera(self, cv2):
+            """카메라가 연결될 때까지 2초마다 다시 찾음(종료하면 None)."""
+            while self._running:
+                for _ in range(20):                    # 2초 대기(종료 요청엔 바로 반응)
+                    if not self._running:
+                        return None
+                    self.msleep(100)
+                cap = self._open_camera(cv2)
+                if cap is not None:
+                    print("[카메라] 카메라가 연결되었습니다.", flush=True)
+                    return cap
+            return None
 
         def _aim_map(self, g: str, gx: float, gy: float) -> tuple[float, float]:
             """카메라 속 손 위치(0~1)를 화면 좌표(0~1)로 바꿉니다.
@@ -494,7 +561,7 @@ if _QT:
 
         def stop(self) -> None:
             self._running = False
-            self.wait(1500)
+            self.wait(3000)                    # 카메라를 여는 중이면 1~2초 걸릴 수 있음
 else:
     class VisionThread:                # PyQt6 없을 때의 더미(임포트 오류 방지)
         available = False

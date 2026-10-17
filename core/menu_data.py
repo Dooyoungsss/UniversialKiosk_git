@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+import config
+
 
 # 메뉴 분류(카테고리)
 CATEGORY_BURGER = "burger"
@@ -52,7 +54,7 @@ class MenuItem:
 # ──────────────────────────────────────────────
 # 전체 메뉴 목록
 # ──────────────────────────────────────────────
-MENU: list[MenuItem] = [
+_CATALOG: list[MenuItem] = [
     # ── 버거 ──
     MenuItem("burger_double_cheese", "더블 치즈버거", "Double Cheeseburger", 6500,
              CATEGORY_BURGER, "🍔", is_best=True,
@@ -110,8 +112,37 @@ MENU: list[MenuItem] = [
              name_zh="橙汁"),
 ]
 
-# 빠른 조회용 사전(아이디 → 메뉴)
-MENU_BY_ID: dict[str, MenuItem] = {m.item_id: m for m in MENU}
+# 지금 판매하는 메뉴(config.BURGERS_ON_SALE 에 따라 버거를 줄임)와 빠른 조회용 사전(아이디 → 메뉴)
+MENU: list[MenuItem] = []
+MENU_BY_ID: dict[str, MenuItem] = {}
+
+
+def reload_menu() -> None:
+    """config 의 판매 버거 목록(BURGERS_ON_SALE)에 맞춰 판매 메뉴를 다시 만듭니다.
+
+    다른 모듈이 MENU 를 붙잡고 있어도 바뀌도록 목록을 그 자리에서 고칩니다.
+    """
+    on_sale = getattr(config, "BURGERS_ON_SALE", None)
+    MENU[:] = [m for m in _CATALOG
+               if m.category != CATEGORY_BURGER or not on_sale or m.item_id in on_sale]
+    MENU_BY_ID.clear()
+    MENU_BY_ID.update({m.item_id: m for m in MENU})
+
+
+reload_menu()
+
+
+def voice_orderable(item: MenuItem) -> bool:
+    """음성으로 주문할 수 있는 메뉴인지(config.VOICE_ORDER_CATEGORIES). 사이드·음료는 화면에서만."""
+    cats = getattr(config, "VOICE_ORDER_CATEGORIES", None)
+    return not cats or item.category in cats
+
+
+def voice_menu_names(lang: str) -> list[str]:
+    """음성 주문이 일부 종류로 제한돼 있으면 음성으로 주문할 수 있는 메뉴 이름들(제한이 없으면 빈 목록)."""
+    if not getattr(config, "VOICE_ORDER_CATEGORIES", None):
+        return []
+    return [m.name(lang) for m in MENU if voice_orderable(m)]
 
 
 def get_item(item_id: str) -> Optional[MenuItem]:

@@ -22,8 +22,10 @@ from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QVBoxLayout)
 
 import config
-from core.i18n import Translator
-from ui.widgets import GestureCursor
+from core import menu_data
+from core.i18n import Translator, josa
+from core.yesno import first_transcript, yes_no_answer
+from ui.widgets import GestureCursor, VoiceMeter
 
 # STT(음성인식)에 쓸 Google 언어 코드(언어별)
 STT_LANG_CODE = {"ko": "ko-KR", "en": "en-US", "zh": "zh-CN"}
@@ -35,18 +37,30 @@ def speech_available() -> bool:
             and importlib.util.find_spec("pyaudio") is not None)
 
 
+_mic_missing_warned: set[str] = set()      # '못 찾음' 안내를 이미 한 마이크 이름(같은 안내 반복 방지)
+
+
 def find_mic_index(name: str) -> int | None:
-    """이름(일부)이 맞는 마이크의 장치 번호. 비었거나 못 찾으면 None(= Windows 기본 마이크)."""
+    """이름(일부)이 맞는 마이크의 장치 번호. 비었거나 못 찾으면 None(= Windows 기본 마이크).
+
+    들을 때마다 새로 찾습니다(목록 조회는 0.1초 이내). 결과를 기억해 두면, USB 마이크가 잠깐
+    빠졌다가 다시 꽂혔을 때나 장치 번호가 바뀌었을 때 엉뚱한 마이크를 계속 쓰게 되기 때문입니다.
+    """
     if not name:
         return None
     try:
         import speech_recognition as sr
         for i, dev in enumerate(sr.Microphone.list_microphone_names()):
             if dev and name.lower() in dev.lower():
+                if name in _mic_missing_warned:
+                    _mic_missing_warned.discard(name)
+                    print(f"[마이크] '{name}' 마이크를 다시 찾았습니다.", flush=True)
                 return i
     except Exception:
         pass
-    print(f"[마이크] '{name}' 마이크를 찾지 못해 Windows 기본 마이크를 사용합니다.", flush=True)
+    if name not in _mic_missing_warned:      # 연결 상태가 바뀔 때만 한 번 안내
+        _mic_missing_warned.add(name)
+        print(f"[마이크] '{name}' 마이크를 찾지 못해 Windows 기본 마이크를 사용합니다.", flush=True)
     return None
 
 
@@ -84,18 +98,70 @@ def looks_english_in_hangul(text: str) -> bool:
     return sum(1 for w in _HANGUL_ENGLISH if w in padded) >= 2
 
 
-def run_when_quiet(speaker, callback, min_delay_ms: int = 0, max_wait_ms: int = 20000) -> None:
+def make_recognizer(sr):
+    """말을 끝까지 듣도록 설정한 인식기를 만듭니다."""
+    recognizer = sr.Recognizer()
+    # 소리 기준값을 낮은 값에서 시작해 주변 소음에 맞춥니다. 기본값(300)에서 시작하면
+    # 짧은 측정으로는 충분히 내려오지 않아, 소리가 작은 마이크에서는 '네' 같은 짧은
+    # 대답을 말소리로 인정하지 못했습니다. (시끄러운 곳에서는 측정값만큼 올라감)
+    recognizer.energy_threshold = 100
+    # 말 사이에 VOICE_PAUSE_S 초까지 쉬어도 말이 끝난 것으로 보지 않음(기본 0.8초는
+    # "치킨버거 하나… 랑 한우버거"처럼 잠깐 생각하는 사이에 끊겼음)
+    recognizer.pause_threshold = config.VOICE_PAUSE_S
+    return recognizer
+
+
+def boost_quiet_audio(sr, audio, max_gain: float = 20.0):
+    """녹음 소리가 작으면 키워서 돌려줍니다(최대 max_gain 배, 소리가 찢어지지 않게).
+
+    USB 마이크(USBAudio1.0)는 입력 볼륨을 최대로 해도 소리가 아주 작게 들어와서
+    인식기가 말소리를 못 알아듣는 경우가 많았습니다.
+    """
+    import numpy as np
+    if getattr(audio, "sample_width", 0) != 2:
+        return audio
+    samples = np.frombuffer(audio.frame_data, dtype=np.int16)
+    if samples.size == 0:
+        return audio
+    peak = int(np.abs(samples.astype(np.int32)).max())
+    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    gain = min(max_gain, 0.7 * 32767 / peak) if peak else 1.0
+    _voice_log(f"녹음 소리 크기: 최대 {peak}, 평균 {rms:.0f} → {gain:.1f}배로 키움"
+               if gain > 1.3 else f"녹음 소리 크기: 최대 {peak}, 평균 {rms:.0f}")
+    if gain <= 1.3:
+        return audio
+    louder = np.clip(samples.astype(np.float64) * gain, -32768, 32767).astype(np.int16)
+    return sr.AudioData(louder.tobytes(), audio.sample_rate, audio.sample_width)
+
+
+def _voice_log(msg: str) -> None:
+    """음성 인식 진행 상황을 콘솔에 남깁니다(VOICE_DEBUG)."""
+    if getattr(config, "VOICE_DEBUG", False):
+        print(f"[음성인식] {msg}", flush=True)
+
+
+def run_when_quiet(speaker, callback, min_delay_ms: int = 0, max_wait_ms: int = 20000,
+                   beep: bool = False, active=None) -> None:
     """안내 음성(TTS)이 다 끝나고 잠깐 쉰 뒤에 callback 을 부릅니다.
 
     안내가 나오는 동안 마이크를 켜면 키오스크 자신의 목소리를 '주변 소음'으로 재서
     듣기 기준이 너무 높아지고, 손님의 짧은 대답('네')을 놓치게 됩니다.
+    beep=True 면 마이크를 켜기 직전에 '삐' 소리를 내서 지금 말하면 된다는 것을 알립니다
+    (질문이 끝나기 전에 대답해서 마이크가 못 듣던 문제).
+    active() 가 False 가 되면(그 사이 창이 닫힘) 삐 소리도 내지 않고 그만둡니다.
     """
     start = time.time() * 1000
 
     def check() -> None:
+        if active is not None and not active():
+            return
         busy = speaker is not None and speaker.is_speaking()
         if busy and time.time() * 1000 - start < max_wait_ms:
             QTimer.singleShot(150, check)
+            return
+        if beep and speaker is not None and getattr(speaker, "enabled", False):
+            speaker.beep()
+            QTimer.singleShot(350, callback)      # 삐(0.18초)가 끝난 뒤 바로 듣기
             return
         QTimer.singleShot(config.TTS_QUIET_GAP_MS, callback)
 
@@ -113,6 +179,7 @@ class SpeechWorker(QThread):
     status = pyqtSignal(str)
     recognized = pyqtSignal(str)
     failed = pyqtSignal(str)
+    confidence = pyqtSignal(float)   # 인식기가 매긴 신뢰도 0~1(-1 = 알 수 없음). recognized 직전에 보냄
 
     def __init__(self, lang: str, parent=None, short_answer: bool = False):
         super().__init__(parent)
@@ -127,42 +194,87 @@ class SpeechWorker(QThread):
             self.failed.emit(f"{self.tr.t('mic_lib_missing')}: {e}")
             return
         try:
-            recognizer = sr.Recognizer()
-            if self.short_answer:
-                recognizer.pause_threshold = 0.5      # 짧은 대답 뒤 바로 끊어서 인식
-                recognizer.non_speaking_duration = 0.3
-            with sr.Microphone(device_index=find_mic_index(config.MIC_NAME)) as source:
-                # 주변 소음 수준을 잠깐 측정해 인식률을 높입니다(노이즈 보정).
-                self.status.emit(self.tr.t("calibrating"))
-                recognizer.adjust_for_ambient_noise(source, duration=0.6)
-                self.status.emit(self.tr.t("speak_now"))
-                audio = recognizer.listen(source, timeout=6,
-                                          phrase_time_limit=4 if self.short_answer else 10)
-        except Exception:
+            recognizer = make_recognizer(sr)
+            mic_index = find_mic_index(config.MIC_NAME)
+            with sr.Microphone(device_index=mic_index) as source:
+                if self.short_answer:
+                    # 짧은 대답('네'): 소리 크기 기준 없이 정해진 시간 동안 녹음해서 인식기에 맡김
+                    self.status.emit(self.tr.t("speak_now"))
+                    _voice_log(f"듣는 중(마이크 {mic_index}번, 짧은 대답 "
+                               f"{config.SHORT_ANSWER_LISTEN_S}초 녹음)")
+                    audio = recognizer.record(source, duration=config.SHORT_ANSWER_LISTEN_S)
+                else:
+                    # 주변 소음 수준을 잠깐 측정해 인식률을 높입니다(노이즈 보정).
+                    self.status.emit(self.tr.t("calibrating"))
+                    recognizer.adjust_for_ambient_noise(source, duration=0.8)
+                    # 듣는 동안에는 기준을 올리지 않음(말하는 중에 기준이 올라가 작게 말한 부분을
+                    # '쉬는 중'으로 보고 말이 끝나기 전에 끊던 문제)
+                    recognizer.dynamic_energy_threshold = False
+                    self.status.emit(self.tr.t("speak_now"))
+                    _voice_log(f"듣는 중(마이크 {mic_index}번, 소리 기준 "
+                               f"{recognizer.energy_threshold:.0f}, 주문)")
+                    audio = recognizer.listen(source, timeout=6,
+                                              phrase_time_limit=config.VOICE_MAX_PHRASE_S)
+        except Exception as e:
             # timeout 등: 사용자가 말을 안 했거나 마이크 접근 실패
+            _voice_log(f"말소리를 못 들음: {type(e).__name__} {e}")
             self.failed.emit(self.tr.t("no_speech"))
             return
 
+        audio = boost_quiet_audio(sr, audio)       # 작은 소리는 키워서 인식기에 보냄
         self.status.emit(self.tr.t("recognizing"))
         if not self.short_answer:
             self._recognize_order(sr, recognizer, audio)
             return
-        try:
-            lang_code = STT_LANG_CODE.get(self.lang, "en-US")
-            result = recognizer.recognize_google(audio, language=lang_code, show_all=True)
-            alts = result.get("alternative", []) if isinstance(result, dict) else []
-            text = " / ".join(a.get("transcript", "") for a in alts if a.get("transcript"))
-            if text and text.strip():
-                self.recognized.emit(text.strip())
-            else:
-                self.failed.emit(self.tr.t("cannot_understand"))
-        except sr.UnknownValueError:
+        self._recognize_short(sr, recognizer, audio)
+
+    def _recognize_short(self, sr, recognizer, audio) -> None:
+        """'네/아니요' 같은 짧은 대답: 화면 언어·한국어·영어·중국어로 동시에 인식.
+
+        화면이 영어나 중국어로 바뀌어 있어도 한국어 '네'를 알아듣도록, 언어별 인식 후보를
+        ' / ' 로, 언어끼리는 ' || ' 로 이어서 보냅니다(앞쪽 언어부터 판단).
+        """
+        # 한국어 결과를 먼저 봄: 화면이 영어여도 '네'를 영어 인식기가 'nah'(아니)로 받아 적음
+        langs = list(dict.fromkeys(["ko", self.lang, "en", "zh"]))
+        results: dict[str, str] = {}
+        confs: dict[str, float] = {}
+        net_error = []
+
+        def work(lg: str) -> None:
+            try:
+                res = recognizer.recognize_google(audio, language=STT_LANG_CODE.get(lg, "en-US"),
+                                                  show_all=True)
+            except sr.RequestError:
+                net_error.append(lg)
+                return
+            except Exception:
+                return
+            alts = res.get("alternative", []) if isinstance(res, dict) else []
+            text = " / ".join(a.get("transcript", "").strip() for a in alts
+                              if a.get("transcript", "").strip())
+            if text:
+                results[lg] = text
+                if "confidence" in alts[0]:
+                    confs[lg] = float(alts[0]["confidence"])
+
+        threads = [threading.Thread(target=work, args=(lg,), daemon=True) for lg in langs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        joined = " || ".join(results[lg] for lg in langs if lg in results)
+        if joined:
+            best = max(confs.values()) if confs else -1.0
+            _voice_log(f"짧은 대답 인식: {joined} (인식률 {best:.0%})" if best >= 0
+                       else f"짧은 대답 인식: {joined}")
+            self.confidence.emit(best)
+            self.recognized.emit(joined)
+        elif net_error:
+            _voice_log("인식 실패: 인터넷 연결 필요")
+            self.failed.emit(self.tr.t("internet_required"))   # Google STT 는 온라인 필요
+        else:
+            _voice_log("인식 실패: 알아들을 수 없음")
             self.failed.emit(self.tr.t("cannot_understand_clear"))
-        except sr.RequestError:
-            # 인터넷 연결이 없을 때(Google STT 는 온라인 필요)
-            self.failed.emit(self.tr.t("internet_required"))
-        except Exception as e:
-            self.failed.emit(f"{self.tr.t('error_label')}: {e}")
 
     def _recognize_order(self, sr, recognizer, audio) -> None:
         """주문 문장 인식: 한국어·영어·중국어 인식기에 '동시에' 보내고 가장 믿을 만한 결과를 씀.
@@ -175,6 +287,7 @@ class SpeechWorker(QThread):
         if config.VOICE_MULTI_LANG:
             langs += [lg for lg in ("ko", "en", "zh") if lg != self.lang]
         results: dict[str, tuple[str, float] | None] = {}
+        raw_conf: dict[str, float] = {}       # 인식기가 실제로 준 신뢰도(화면 표시용)
         net_error = []
 
         def work(lg: str) -> None:
@@ -190,6 +303,8 @@ class SpeechWorker(QThread):
             alts = res.get("alternative", []) if isinstance(res, dict) else []
             text = (alts[0].get("transcript", "") if alts else "").strip()
             conf = float(alts[0].get("confidence", 0.5)) if alts else 0.0
+            if alts and "confidence" in alts[0]:
+                raw_conf[lg] = float(alts[0]["confidence"])
             results[lg] = (text, conf) if text else None
 
         threads = [threading.Thread(target=work, args=(lg,), daemon=True) for lg in langs]
@@ -199,32 +314,18 @@ class SpeechWorker(QThread):
             t.join(timeout=10)
         candidates = [(lg, *results[lg]) for lg in langs if results.get(lg)]
         if not candidates:
+            _voice_log("인식 실패: " + ("인터넷 연결 필요" if net_error else "알아들을 수 없음"))
             self.failed.emit(self.tr.t("internet_required") if net_error
                              else self.tr.t("cannot_understand_clear"))
             return
         best = max(candidates, key=lambda c: transcript_score(c[0], c[1], c[2], self.lang))
+        _voice_log(f"주문 인식({best[0]}): {best[1]} (인식률 {best[2]:.0%})")
+        self.confidence.emit(raw_conf.get(best[0], -1.0))
         self.recognized.emit(best[1])
 
 
 class VoiceOrderDialog(QDialog):
     """자연어 주문 문장을 입력받는 창."""
-
-    EXAMPLES_KO = [
-        "불고기버거 세트 하나 주세요, 콜라는 라지로 바꿔주세요",
-        "더블 치즈버거 두 개랑 감자튀김 주세요",
-        "새우버거 세트랑 사이드는 치즈스틱으로 바꿔주세요",
-        "한우버거 하나랑 오렌지주스 주세요",
-    ]
-    EXAMPLES_EN = [
-        "One bulgogi burger set, change the cola to large",
-        "Two double cheeseburgers and french fries please",
-        "A shrimp burger set with cheese stick instead of fries",
-    ]
-    EXAMPLES_ZH = [
-        "来一份烤肉汉堡套餐，可乐换成大杯",
-        "两个双层芝士汉堡和薯条",
-        "一份鲜虾汉堡套餐，配菜换成芝士棒",
-    ]
 
     def __init__(self, lang: str, hint: str, listening_text: str, parent=None,
                  speaker=None, auto_listen: bool = False, theme=None,
@@ -240,6 +341,7 @@ class VoiceOrderDialog(QDialog):
         self._auto = auto_listen          # 자동으로 계속 듣기(시각장애인 흐름·음성 주문 버튼)
         self._fails = 0                   # 연속으로 못 알아들은 횟수(자동 재시도 제한)
         self.checkout_requested = False   # 창을 닫은 뒤 바로 결제할지
+        self._confirming = False          # '결제할까요?'에 대한 네/아니요를 기다리는 중
         # 고대비 등 현재 화면 테마의 색을 따라야 저시력자도 안내 글씨를 읽을 수 있음
         sub_color = theme.sub_text if theme else "#5C6B82"
         accent = theme.primary if theme else "#2D6CDF"
@@ -279,20 +381,9 @@ class VoiceOrderDialog(QDialog):
         self.status_label.setStyleSheet(f"color:{accent}; font-weight:700;")
         lay.addWidget(self.status_label)
 
-        # 예시 문장 버튼들(시연 편의) — 긴 문장이 창 폭을 넘지 않도록 글자 크기 고정
-        ex_label = QLabel(self.tr.t("examples_label"))
-        ex_label.setStyleSheet(f"color:{sub_color}; font-weight:700;")
-        lay.addWidget(ex_label)
-        examples = {"ko": self.EXAMPLES_KO, "en": self.EXAMPLES_EN,
-                    "zh": self.EXAMPLES_ZH}.get(lang, self.EXAMPLES_EN)
-        for ex in examples:
-            b = QPushButton(ex)
-            b.setObjectName("Ghost")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setMinimumHeight(64)
-            b.setStyleSheet("text-align:left; padding:10px 16px; font-size:18pt;")
-            b.clicked.connect(lambda _, t=ex: self.input.setText(t))
-            lay.addWidget(b)
+        # 음성 인식률 막대(들은 말을 얼마나 확실하게 알아들었는지)
+        self.voice_meter = VoiceMeter(self.tr.t("voice_meter_title"), self.tr.t("voice_meter_wait"))
+        lay.addWidget(self.voice_meter)
 
         # 실제 마이크 버튼 + 확인/취소
         btn_row = QHBoxLayout()
@@ -344,10 +435,15 @@ class VoiceOrderDialog(QDialog):
         self._dwell_y = 0.5
         self._last_dwell_ms = 0.0
         self._aim: tuple[float, float] | None = None   # 손 커서의 현재 위치(집게 손 클릭용)
+        self._dwell_lock: QPushButton | None = None    # 방금 드웰로 누른 버튼(커서가 벗어날 때까지 재클릭 금지)
         self.cursor = GestureCursor(self)   # 창 위에 그려지는 손 커서(맨 위 z-order)
 
         # 창이 열리면 음성으로 주문 방법을 안내합니다(배리어프리 핵심).
         self._say(self.tr.t("voice_guide_tts"))
+        names = menu_data.voice_menu_names(lang)
+        if names:      # 음성 주문이 버거로 제한돼 있으면 음성으로 주문할 수 있는 메뉴를 알려 줌
+            listed = ", ".join(names)
+            self._say(self.tr.t("voice_menu_tts").format(names=listed, eul=josa(listed, "을/를")))
         # 시각장애인 흐름: 안내를 들려준 뒤 마이크를 자동으로 켭니다.
         # (안내 음성이 끝날 때까지 기다렸다가 시작)
         if auto_listen and speech_available():
@@ -375,8 +471,8 @@ class VoiceOrderDialog(QDialog):
         self._say(self.tr.t("voice_listen_tts"))
         self.mic_btn.setEnabled(False)
         self.mic_btn.setText("🎙 " + self.tr.t("listening_now"))
-        # "지금 말씀해 주세요" 안내가 끝난 뒤에 마이크를 엽니다(안내 소리를 듣지 않게).
-        run_when_quiet(self.speaker, self._begin_listen)
+        # 안내가 끝나면 '삐' 소리를 내고 마이크를 엽니다(안내 소리를 듣지 않게).
+        run_when_quiet(self.speaker, self._begin_listen, beep=True, active=self.isVisible)
 
     def _begin_listen(self) -> None:
         if not self.isVisible():                 # 그 사이 창이 닫혔으면 마이크를 켜지 않음
@@ -384,14 +480,27 @@ class VoiceOrderDialog(QDialog):
             return
         if self._worker and self._worker.isRunning():
             return
-        self._worker = SpeechWorker(self.lang, self)   # 대화 중 언어가 바뀌면 그 언어로
+        # 직전 인식 스레드가 끝나며 버튼을 '다시 말하기'로 되돌렸을 수 있으므로 듣는 중으로 다시 표시
+        self.mic_btn.setEnabled(False)
+        self.mic_btn.setText("🎙 " + self.tr.t("listening_now"))
+        # 대화 중 언어가 바뀌면 그 언어로. '결제할까요?'의 대답은 짧은 대답(네/아니요)으로 들음
+        self._worker = SpeechWorker(self.lang, self, short_answer=self._confirming)
         self._worker.status.connect(self.status_label.setText)
+        self.voice_meter.set_listening(self.tr.t("listening_now"))
+        self._worker.confidence.connect(self.voice_meter.set_confidence)
         self._worker.recognized.connect(self._on_recognized)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._reset_mic_button)
         self._worker.start()
 
     def _on_recognized(self, text: str) -> None:
+        heard = first_transcript(text) if self._confirming else text
+        self.voice_meter.set_heard(Translator(self.lang).t("voice_meter_heard").format(text=heard))
+        if self._confirming:                      # '결제할까요?'에 대한 대답
+            self.input.setText(heard)
+            self.status_label.setText(self.tr.t("heard") + heard)
+            self._handle_confirm_answer(text)
+            return
         self.input.setText(text)
         self.status_label.setText(self.tr.t("heard") + text)
         if self._on_text is not None:
@@ -402,6 +511,7 @@ class VoiceOrderDialog(QDialog):
 
     def _on_failed(self, reason: str) -> None:
         self.status_label.setText("⚠ " + reason)
+        self.voice_meter.set_failed(reason)
         self._say(reason)                 # 화면을 못 보는 손님도 다시 말해야 함을 알 수 있게
         if self._auto and self._on_text is not None:
             self._fails += 1
@@ -416,6 +526,9 @@ class VoiceOrderDialog(QDialog):
         text = self.input.text().strip()
         if not text:
             return
+        if self._confirming:                      # 결제 확인 중에 직접 '네'를 입력한 경우
+            self._handle_confirm_answer(text)
+            return
         if self._on_text is not None:
             self._handle_text(text)
         else:
@@ -428,15 +541,60 @@ class VoiceOrderDialog(QDialog):
         self.input.clear()
         self._refresh_pay_btn()
         if res.get("checkout"):
-            self.checkout_requested = True
-            self.accept()
+            # 바로 결제하지 않고 담은 메뉴와 합계를 읽어 준 뒤 '결제할까요?'라고 물어봄
+            question = res.get("confirm") or \
+                Translator(self.lang).t("checkout_confirm_tts").format(readout="").strip()
+            self._ask_checkout(question)
             return
         if res.get("message"):
             self.status_label.setText(res["message"])
         if res.get("understood"):
             self._fails = 0
+        else:
+            self._fails += 1                      # 들리긴 했지만 주문이 아님(주변 대화 등)도 실패로 셈
         if self._auto:
+            if self._fails >= config.VOICE_LISTEN_RETRIES:
+                # 계속 못 알아들으면 무한히 듣지 않고 버튼 사용을 안내(마이크 버튼으로 다시 시작)
+                self._say(Translator(self.lang).t("voice_retry_hint_tts"))
+                return
             self._say(Translator(self.lang).t("voice_next_tts"))
+            self._listen_again()
+
+    def _ask_checkout(self, question: str) -> None:
+        """'결제' 요청: 담은 메뉴·합계와 함께 '결제할까요?'라고 묻고 네/아니요를 듣습니다."""
+        self._confirming = True
+        self._fails = 0
+        self.status_label.setText("💳 " + question)
+        self._say(question)
+        if self._auto:
+            self._listen_again()
+
+    def _handle_confirm_answer(self, text: str) -> None:
+        """'결제할까요?'에 대한 대답: 네 → 결제, 아니요 → 기다림(다시 '결제'라고 하면 또 물음)."""
+        tr = Translator(self.lang)
+        self.input.clear()
+        answer = yes_no_answer(text)
+        if answer is True:
+            self._confirming = False
+            self.checkout_requested = True
+            self.accept()
+            return
+        if answer is False:
+            self._confirming = False
+            self._fails = 0
+            self.status_label.setText(tr.t("checkout_wait_tts"))
+            self._say(tr.t("checkout_wait_tts"))
+            if self._auto:
+                self._listen_again()
+            return
+        self._fails += 1                          # 네/아니요로 알아듣지 못함 → 다시 물음
+        if self._fails >= config.VOICE_LISTEN_RETRIES:
+            self._confirming = False              # 다시 '결제'라고 하거나 결제하기 버튼으로
+            self._say(tr.t("voice_retry_hint_tts"))
+            return
+        self.status_label.setText(tr.t("checkout_yesno_tts"))
+        self._say(tr.t("checkout_yesno_tts"))
+        if self._auto:
             self._listen_again()
 
     def _listen_again(self) -> None:
@@ -445,7 +603,7 @@ class VoiceOrderDialog(QDialog):
             return
         self.mic_btn.setEnabled(False)
         self.mic_btn.setText("🎙 " + self.tr.t("listening_now"))
-        run_when_quiet(self.speaker, self._begin_listen)
+        run_when_quiet(self.speaker, self._begin_listen, beep=True, active=self.isVisible)
 
     def _request_checkout(self) -> None:
         """결제하기 버튼: 담은 메뉴가 있으면 창을 닫고 바로 결제."""
@@ -470,12 +628,11 @@ class VoiceOrderDialog(QDialog):
     def receive_gesture(self, name: str) -> None:
         """비전 스레드에서 전달된 제스처를 다이얼로그 내부 동작으로 연결합니다.
 
-        · 선택 손동작(기본: 집게 손) : 입력된 텍스트가 있으면 주문 분석 실행(Accept)
-        · swipe_right     : 예시 문장 다음으로 이동
-        · swipe_left      : 예시 문장 이전으로 이동
+        · 선택 손동작(기본: 집게 손) : 커서 아래 버튼을 누르고, 버튼을 가리키지 않았으면
+          입력된 문장으로 주문 분석
         """
         if name in config.SELECT_GESTURES or name == "select":
-            # 집게 손: 커서 아래 버튼(마이크·예시 문장·취소·주문 분석)을 누르고,
+            # 집게 손: 커서 아래 버튼(마이크·취소·주문 분석·결제하기)을 누르고,
             # 버튼을 가리키지 않았으면 입력된 문장으로 바로 주문 분석
             if self._aim is not None:
                 target = self._button_under_cursor(*self._aim)
@@ -484,26 +641,6 @@ class VoiceOrderDialog(QDialog):
                     return
             if self.input.text().strip():
                 self._submit_input()         # 대화식이면 바로 담기, 아니면 창을 닫고 넘김
-        elif name == "swipe_right":
-            self._cycle_example(+1)
-        elif name == "swipe_left":
-            self._cycle_example(-1)
-
-    def _cycle_example(self, direction: int) -> None:
-        """방향에 따라 예시 문장을 순환해서 입력란에 채워 줍니다."""
-        examples = {"ko": self.EXAMPLES_KO, "en": self.EXAMPLES_EN,
-                    "zh": self.EXAMPLES_ZH}.get(self.lang, self.EXAMPLES_EN)
-        if not examples:
-            return
-        current = self.input.text().strip()
-        try:
-            idx = list(examples).index(current)
-        except ValueError:
-            idx = -1
-        next_idx = (idx + direction) % len(examples)
-        self.input.setText(examples[next_idx])
-        preview = examples[next_idx][:28] + ("…" if len(examples[next_idx]) > 28 else "")
-        self.status_label.setText("👆 " + preview)
 
     # ─────────────────────────────────────
     # 제스처 에임(커서 이동) + 드웰(머무름) 클릭
@@ -520,7 +657,7 @@ class VoiceOrderDialog(QDialog):
             self._reset_dwell()
             return
         target = self._button_under_cursor(nx, ny)
-        if getattr(self, "_dwell_lock", None) is not None:   # 방금 누른 버튼 위면 대기
+        if self._dwell_lock is not None:   # 방금 누른 버튼 위면 대기
             if target is self._dwell_lock:
                 self._reset_dwell()
                 return
@@ -546,7 +683,7 @@ class VoiceOrderDialog(QDialog):
             self._reset_dwell()
             self._dwell_lock = target   # 커서가 벗어날 때까지 같은 버튼 재클릭 금지
             if target.isEnabled():
-                target.click()          # 실제 버튼 클릭(마이크/예시/취소/주문 분석/결제)
+                target.click()          # 실제 버튼 클릭(마이크/취소/주문 분석/결제)
 
     def _reset_dwell(self) -> None:
         self._dwell_target = None

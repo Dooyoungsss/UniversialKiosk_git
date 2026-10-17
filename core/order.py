@@ -97,6 +97,24 @@ class Cart:
             if self.lines[idx].qty <= 0:
                 self.lines.pop(idx)
 
+    def remove_item(self, item_id: str, qty: int = 0, is_set: bool | None = None) -> int:
+        """메뉴를 장바구니에서 뺍니다(음성 '○○ 빼줘'). 실제로 뺀 개수를 돌려줍니다.
+
+        qty=0 이면 그 메뉴를 모두, 아니면 그 개수만큼(나중에 담은 줄부터) 뺍니다.
+        is_set 을 주면 세트(True)나 단품(False) 중 그쪽만 뺍니다.
+        """
+        removed = 0
+        for line in reversed(self.lines):
+            if line.item.item_id != item_id or (is_set is not None and line.is_set != is_set):
+                continue
+            take = line.qty if qty <= 0 else min(line.qty, qty - removed)
+            line.qty -= take
+            removed += take
+            if 0 < qty <= removed:
+                break
+        self.lines = [line for line in self.lines if line.qty > 0]
+        return removed
+
     def clear(self) -> None:
         self.lines.clear()
 

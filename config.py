@@ -46,10 +46,19 @@ CHILD_FONT_SCALE = 1.3
 # ──────────────────────────────────────────────
 # 비전 AI(카메라) 설정
 # ──────────────────────────────────────────────
-CAMERA_INDEX = 1                          # 웹캠 번호: 0 = 720p HD Camera, 1 = GENERAL WEBCAM
+CAMERA_INDEX = 0                          # 웹캠 번호: 0 = GENERAL WEBCAM, 1 = 720p HD Camera (꽂는 순서에 따라 바뀜)
 # 음성 인식에 쓸 마이크 이름(일부만 써도 됨). 비워 두면("") Windows 기본 마이크를 씁니다.
 # 이름에 맞는 마이크를 못 찾으면 Windows 기본 마이크로 대신 듣습니다.
-MIC_NAME = "USBAudio1.0"                  # USB 마이크(credio)
+MIC_NAME = "USB MIC"                      # USB 마이크(장치 이름 "마이크(USB MIC )")
+# 음성 안내를 내보낼 스피커 이름(일부). "" 이면 Windows 기본 스피커.
+# 블루투스 BS-05: 끊기면 기본 스피커로 대신 내보내고, 다시 연결되면 자동으로 돌아감
+SPEAKER_NAME = "BS-05"
+
+# ── 판매 메뉴(대회 시연용으로 줄임) ──
+BURGERS_ON_SALE = ("burger_chicken", "burger_hanwoo")   # 판매하는 버거(None 이면 6종 모두)
+SET_MENU_ENABLED = False                 # 세트(버거+사이드+음료) 메뉴 사용 여부
+VOICE_ORDER_CATEGORIES = ("burger",)     # 음성으로 주문할 수 있는 종류(None 이면 모두).
+                                         # 사이드·음료는 화면(터치·손동작)에서만 주문
 VISION_ENABLED = True                     # False 면 카메라를 아예 끄고 데모 모드로 동작
 FACE_MAX_NUM = 1                          # 동시에 추적할 얼굴 수
 HAND_MAX_NUM = 1                          # 동시에 추적할 손 수
@@ -65,6 +74,15 @@ FACE_DEBUG = True
 # 손동작 판정 수치(집게 거리·검지 뻗음 정도)와 집게로 누른 대상을 콘솔에 출력합니다.
 # 집게 손이 잘 안 될 때 원인을 찾는 용도. 시연이 끝나면 False 로 바꾸세요.
 GESTURE_DEBUG = True
+# 음성 안내(무엇을 몇 초 동안 말했는지)·음성 인식(들은 말·실패 이유)을 콘솔에 출력
+VOICE_DEBUG = True
+# '네/아니요' 같은 짧은 대답은 소리 크기 기준 없이 이 시간(초) 동안 녹음해서 인식
+# (주변이 시끄러우면 기준이 올라가 작은 '네'를 말소리로 인정하지 못하던 문제 방지)
+SHORT_ANSWER_LISTEN_S = 4.0
+# 주문을 들을 때: 말 사이에 이 시간(초)까지 쉬어도 계속 듣고, 한 번에 최대 이 시간(초)까지 들음
+# (0.8초만 쉬어도 말이 끝난 것으로 보고 끊던 것을 늘림)
+VOICE_PAUSE_S = 1.5
+VOICE_MAX_PHRASE_S = 15
 # 연령 분류(어린이/성인/노인) CNN 추론은 다소 무거우므로 매 프레임 대신
 # N 프레임마다 1회만 실행합니다(부드러운 화면 + 충분한 투표 표본).
 AGE_INFER_EVERY = 3

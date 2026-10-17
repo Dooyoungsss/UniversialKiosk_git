@@ -30,6 +30,11 @@ config.VISION_ENABLED = False
 config.TTS_ENABLED = False
 import core.speech as _speech_mod
 _speech_mod.TTS_ENABLED = False
+# 엔진 전체(버거 6종·세트·음성으로 사이드·음료 주문)를 검증하도록 판매 메뉴 제한을 풉니다.
+# (대회용 판매 설정은 test_full.py 의 test_sale_config_* 에서 따로 검증)
+config.BURGERS_ON_SALE = None
+config.SET_MENU_ENABLED = True
+config.VOICE_ORDER_CATEGORIES = None
 
 # DB 오염 방지: 모든 KioskDatabase 를 인메모리로 강제(테스트 격리)
 import core.database as _db_mod

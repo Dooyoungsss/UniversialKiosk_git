@@ -18,29 +18,57 @@ import sys
 
 
 def _monitor_sizes() -> list[tuple[int, int, int, int]]:
-    """연결된 모니터들의 (가로, 세로, 작업영역 가로, 작업영역 세로) 픽셀 크기(Windows, 실패하면 빈 목록).
+    """연결된 모니터들의 (가로, 세로, 작업영역 가로, 작업영역 세로) '실제 픽셀' 크기(Windows, 실패하면 빈 목록).
 
     작업영역 = 작업 표시줄을 뺀, 창을 놓을 수 있는 영역입니다.
+    Qt 가 DPI 설정을 하기 전에 부르므로 GetMonitorInfo 는 Windows 화면 배율(125% 등)만큼
+    줄어든 값을 돌려줍니다. 그래서 실제 해상도는 EnumDisplaySettings 로 따로 읽고,
+    작업영역도 같은 비율로 되돌립니다(배율 때문에 화면이 괜히 축소되던 문제 방지).
     """
     try:
         import ctypes
         from ctypes import wintypes
 
-        class _MonitorInfo(ctypes.Structure):
+        class _MonitorInfoEx(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
-                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD),
+                        ("szDevice", wintypes.WCHAR * 32)]
+
+        class _DevMode(ctypes.Structure):
+            _fields_ = [("dmDeviceName", wintypes.WCHAR * 32), ("dmSpecVersion", wintypes.WORD),
+                        ("dmDriverVersion", wintypes.WORD), ("dmSize", wintypes.WORD),
+                        ("dmDriverExtra", wintypes.WORD), ("dmFields", wintypes.DWORD),
+                        ("dmPositionX", wintypes.LONG), ("dmPositionY", wintypes.LONG),
+                        ("dmDisplayOrientation", wintypes.DWORD), ("dmDisplayFixedOutput", wintypes.DWORD),
+                        ("dmColor", ctypes.c_short), ("dmDuplex", ctypes.c_short),
+                        ("dmYResolution", ctypes.c_short), ("dmTTOption", ctypes.c_short),
+                        ("dmCollate", ctypes.c_short), ("dmFormName", wintypes.WCHAR * 32),
+                        ("dmLogPixels", wintypes.WORD), ("dmBitsPerPel", wintypes.DWORD),
+                        ("dmPelsWidth", wintypes.DWORD), ("dmPelsHeight", wintypes.DWORD),
+                        ("dmDisplayFlags", wintypes.DWORD), ("dmDisplayFrequency", wintypes.DWORD),
+                        ("dmICMMethod", wintypes.DWORD), ("dmICMIntent", wintypes.DWORD),
+                        ("dmMediaType", wintypes.DWORD), ("dmDitherType", wintypes.DWORD),
+                        ("dmReserved1", wintypes.DWORD), ("dmReserved2", wintypes.DWORD),
+                        ("dmPanningWidth", wintypes.DWORD), ("dmPanningHeight", wintypes.DWORD)]
 
         sizes: list[tuple[int, int, int, int]] = []
         proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
                                        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
 
         def _collect(monitor, _dc, _rect, _data):
-            info = _MonitorInfo()
-            info.cbSize = ctypes.sizeof(_MonitorInfo)
+            info = _MonitorInfoEx()
+            info.cbSize = ctypes.sizeof(_MonitorInfoEx)
             ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info))
             m, wk = info.rcMonitor, info.rcWork
-            sizes.append((m.right - m.left, m.bottom - m.top,
-                          wk.right - wk.left, wk.bottom - wk.top))
+            w, h = m.right - m.left, m.bottom - m.top
+            work_w, work_h = wk.right - wk.left, wk.bottom - wk.top
+            dm = _DevMode()
+            dm.dmSize = ctypes.sizeof(_DevMode)
+            if ctypes.windll.user32.EnumDisplaySettingsW(info.szDevice, -1, ctypes.byref(dm))                     and dm.dmPelsWidth and w:
+                ratio = dm.dmPelsWidth / w            # 화면 배율(예: 125% → 1.25)
+                w, h = dm.dmPelsWidth, dm.dmPelsHeight
+                work_w, work_h = round(work_w * ratio), round(work_h * ratio)
+            sizes.append((w, h, work_w, work_h))
             return True
 
         ctypes.windll.user32.EnumDisplayMonitors(None, None, proc_type(_collect), 0)

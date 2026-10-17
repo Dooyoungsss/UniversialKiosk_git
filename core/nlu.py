@@ -28,7 +28,8 @@ from core import menu_data
 @dataclass
 class OrderIntent:
     """문장 하나에서 뽑아낸 '하나의 주문 의도'."""
-    action: str = "add"               # add(담기) / clear(비우기) / checkout(결제)
+    # add(담기) / remove(빼기) / show_cart(담은 메뉴 알려주기) / clear(비우기) / checkout(결제)
+    action: str = "add"
     item_id: Optional[str] = None
     qty: int = 1
     is_set: bool = False
@@ -67,6 +68,23 @@ _ZH_NUM = {
 _ZH_COUNTER = "个|份|杯|块|套|瓶|盒"
 # 수량 뒤에 붙는 단위(카운터)
 _COUNTER = "개|잔|컵|봉|조각|세트|set"
+
+# '○○ 빼줘' — 메뉴를 장바구니에서 뺌. '피클 빼고 주세요'의 '빼고'는 빼기 요청이 아니므로 제외
+_REMOVE_RE = re.compile(r"빼\s*(?:줘|주|요|라|버|$)|뺄|뺐|제거|삭제|없애|취소|"
+                        r"\bremove\b|\bdelete\b|take (?:it )?(?:out|off)|\bcancel\b|"
+                        r"去掉|删掉|删除|不要了|拿掉|取消")
+# 세트 구성 바꾸기('감자튀김 빼고 치즈스틱으로 바꿔줘')는 빼기가 아님
+_CHANGE_WORDS = ("바꿔", "변경", "대신", "change", "instead", "换", "改")
+# '고른 메뉴 보여줘' — 담은 메뉴와 합계를 알려 줌
+_SHOW_WORDS = ("뭐 담", "뭘 담", "뭐가 담", "무엇을 담", "뭐 골랐", "뭘 골랐", "뭐 시켰", "뭘 시켰",
+               "뭐 주문", "뭘 주문", "담은 메뉴", "담은 거", "담긴 메뉴", "담긴 거", "고른 메뉴",
+               "고른 거", "주문한 메뉴", "주문한 거", "주문 내역", "주문내역", "장바구니",
+               "what's in my cart", "what is in my cart", "my cart", "my order",
+               "what did i order", "what i ordered",
+               "购物车", "我点了什么", "点了什么", "我的订单", "已点")
+# 메뉴 이름과 함께 '장바구니'라고 하면 담기일 수도 있으므로, 이런 말이 있을 때만 알려주기로 봄
+_SHOW_VERBS = ("보여", "알려", "읽어", "확인", "뭐", "뭘", "무엇", "what", "show", "read", "tell",
+               "check", "看", "什么")
 
 
 def detect_language(text: str) -> str:
@@ -149,7 +167,7 @@ def _find_menu_fuzzy(text: str):
     return found
 
 
-def _extract_qty(text: str, around: int) -> int:
+def _extract_qty(text: str, around: int, default: int = 1) -> int:
     """메뉴 키워드 주변에서 수량을 찾습니다.
 
     한국어는 수량이 메뉴 '뒤'에 오고(예: "버거 두 개"),
@@ -186,7 +204,7 @@ def _extract_qty(text: str, around: int) -> int:
     for word, n in _KO_NUM_STANDALONE.items():
         if word in after:
             return n
-    return 1
+    return default
 
 
 def _parse_with_rules(text: str) -> NLUResult:
@@ -194,6 +212,21 @@ def _parse_with_rules(text: str) -> NLUResult:
     lang = detect_language(text)
     result = NLUResult(detected_language=lang)
     low = text.lower()
+
+    # '○○ 빼줘': 메뉴 이름이 있으면 그 메뉴만 뺌('콜라 취소해줘'가 장바구니 전체를 비우지 않게)
+    if _REMOVE_RE.search(low.rstrip(" .!?。！？")) and not any(k in low for k in _CHANGE_WORDS):
+        found = _find_menu_in_text(text)
+        if not found:
+            fuzzy = _find_menu_fuzzy(text)
+            found = [(fuzzy[0][0], 0)] if fuzzy else []
+        if found:
+            set_said = any(k in low for k in ["세트", "set", "combo", "套餐"])
+            for item, pos in found:
+                result.intents.append(OrderIntent(
+                    action="remove", item_id=item.item_id,
+                    qty=_extract_qty(text, pos, default=0),     # 0 = 그 메뉴 모두
+                    is_set=set_said and item.category == menu_data.CATEGORY_BURGER))
+            return result
 
     # 전체 비우기 / 결제 의도 먼저 확인
     if any(k in low for k in ["다 지워", "전부 삭제", "비워", "취소", "clear", "empty",
@@ -205,6 +238,11 @@ def _parse_with_rules(text: str) -> NLUResult:
                               "that's all", "that is all", "그게 다", "끝",
                               "结账", "结算", "付款", "买单"]):
         result.intents.append(OrderIntent(action="checkout"))
+    elif any(k in low for k in _SHOW_WORDS) and (
+            not _find_menu_in_text(text) or any(v in low for v in _SHOW_VERBS)):
+        # '고른 메뉴 보여줘'·'뭐 담았어?' — 담은 메뉴를 알려 줌(결제 요청이면 결제 확인 때 읽어 줌)
+        result.intents.append(OrderIntent(action="show_cart"))
+        return result
 
     is_set = any(k in low for k in ["세트", "set", "combo", "套餐"])
     drink_size = "L" if any(k in low for k in ["라지", "큰", "large", "라쥐", "大杯", "大号"]) else "M"
